@@ -82,113 +82,28 @@ pwsh -File .\setup.ps1 -Model medium
 
 Force a clean rebuild of the virtual environment:
 ```powershell
-pwsh -File .\setup.ps1 -Force -Model small
-```
+## 🔧 Troubleshooting
 
-Skip validation or FFmpeg check (useful in CI or offline):
-```powershell
-pwsh -File .\setup.ps1 -NoValidate -NoFFmpegCheck
-```
+The README now contains only a concise summary. Full details moved to [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
-Use a specific Python interpreter:
-```powershell
-pwsh -File .\setup.ps1 -Python "C:\\Python311\\python.exe" -Model small
-```
+Quick reference:
+- PyAV import error → Use `whisper_clean.py`.
+- FFmpeg missing → Install via script or Chocolatey.
+- CUDA warning / slow run → Install CUDA Toolkit + cuDNN or rely on CPU fallback.
+- Missing cuDNN DLLs → Automatic CPU fallback (see doc for permanent fix).
+- Version mismatch (StorageView) → Reinstall `ctranslate2==4.5.0` + `faster-whisper==1.2.0`.
+- Force clean rebuild → Remove `.venv` and reinstall pinned deps.
 
-Quiet mode (minimal output):
-```powershell
-pwsh -File .\setup.ps1 -Quiet
-```
+Device fallback behavior:
+| Scenario | Action |
+|----------|--------|
+| Run with `--device cuda` and CUDA incomplete | Auto fallback to CPU (compute cascade) |
+| Run with `--device-order cuda,igpu,cpu` | Try each in order (internal fallback only on last) |
+| Use `--no-fallback` | Abort on first device failure |
 
-Auto-open a new shell with the virtual environment activated (convenience):
-```powershell
-pwsh -File .\setup.ps1 -LaunchShell
-```
-This leaves your current window unchanged and opens a new one already inside the venv.
+See the full guide for commands, diagnostics, and DLL remediation.
 
-Flags overview:
-
-| Flag | Purpose |
-|------|---------|
-| `-Force` | Delete and recreate `.venv` even if it exists |
-| `-Model <name>` | Pre-download & warm up a model (`tiny`, `base`, `small`, `medium`, `large-v3`) |
-| `-Python <path>` | Use a specific Python executable |
-| `-NoValidate` | Skip running `test_clean.py` after install |
-| `-NoFFmpegCheck` | Skip FFmpeg availability check |
-| `-Quiet` | Suppress non-error informational output |
-| `-LaunchShell` | Open a new PowerShell window with the venv activated |
-
-After completion activate the environment:
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Then run:
-```powershell
-python whisper_clean.py test_video.mp4 --model small
-```
-
-#### Option B: Manual Steps
-
-```powershell
-# Navigate to project directory
-cd ~\Projects\Subtitle_translator
-
-# Create and activate virtual environment
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# Install dependencies (clean method - recommended)
-pip install faster-whisper --no-deps
-pip install ctranslate2==4.5.0 tokenizers transformers rich onnxruntime av==11.0.0
-```
-
-### 3. Verify Setup
-
-```powershell
-# Run the validation script to check everything is working
-.\.venv\Scripts\python.exe test_clean.py
-```
-
-The validation script will check:
-- ✅ Python version compatibility
-- ✅ All required packages (faster-whisper, ctranslate2, rich)
-- ✅ FFmpeg binary availability
-- ✅ CUDA support (optional but recommended)
-
-## 🔧 Clean Implementation (Recommended)
-
-Due to persistent Windows compatibility issues with PyAV (av package), we've created a **clean implementation** that bypasses PyAV entirely by using FFmpeg directly:
-
-### Using whisper_clean.py
-
-```powershell
-# Activate virtual environment
-.\.venv\Scripts\Activate.ps1
-
-# Basic transcription
-.\.venv\Scripts\python.exe whisper_clean.py video.mp4
-
-# Japanese anime to English translation with GPU
-.\.venv\Scripts\python.exe whisper_clean.py anime.mkv --translate --lang ja --device cuda
-
-# High-quality transcription with large model
-.\.venv\Scripts\python.exe whisper_clean.py video.mp4 --model large-v3 --beam 8
-
-# CPU mode if CUDA issues
-.\.venv\Scripts\python.exe whisper_clean.py video.mp4 --device cpu
-```
-
-**Key Benefits:**
-- ✅ **No PyAV dependency** - eliminates common Windows compatibility issues
-- ✅ **Direct FFmpeg integration** - more reliable audio extraction
-- ✅ **Same features** - full GPU acceleration, translation, batch processing
-- ✅ **Cleaner codebase** - fewer dependencies, better error handling
-
-## 📖 Usage (Legacy whisper_mvp.py)
-
-### Basic Commands
-
+## � Additional Troubleshooting (Advanced)
 ```powershell
 # Basic transcription (same language subtitles)
 .\.venv\Scripts\python.exe whisper_mvp.py video.mp4
