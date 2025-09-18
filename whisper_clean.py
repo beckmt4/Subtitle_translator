@@ -78,6 +78,30 @@ class WhisperMVPClean:
             if "CUDA" in str(e) or "cuda" in str(e):
                 console.print("[yellow]Tip: Try --device cpu if CUDA is not available or install CUDA Toolkit + cuDNN[/yellow]")
             return False
+
+    def _check_cuda_runtime(self) -> tuple[bool, list[str]]:
+        """Check presence of critical CUDA/cuDNN runtime DLLs on Windows.
+
+        Returns (ready, missing_list). Only meaningful if device == 'cuda'.
+        """
+        if os.name != 'nt' or self.device != 'cuda':
+            return True, []
+        required = [
+            'cudart64_12.dll',
+            'cublas64_12.dll',
+            'cublasLt64_12.dll',
+            'cudnn_ops64_9.dll'
+        ]
+        missing: list[str] = []
+        for dll in required:
+            try:
+                r = subprocess.run(['where', dll], capture_output=True, text=True)
+                if r.returncode != 0:
+                    missing.append(dll)
+            except Exception:
+                # If where not available, skip detailed check
+                return True, []  # don't block
+        return (len(missing) == 0, missing)
     
     def extract_audio_ffmpeg(self, input_path: str) -> Optional[str]:
         """Extract audio using FFmpeg directly - no PyAV needed."""
@@ -192,8 +216,65 @@ class WhisperMVPClean:
                     model_name: str = "medium", language: Optional[str] = None,
                     translate: bool = False, beam_size: int = 5,
                     device: str = "cuda", compute_type: str = "float16",
-                    allow_fallback: bool = True) -> bool:
-        """Process a single video/audio file."""
+                    allow_fallback: bool = True,
+                    device_order: Optional[list[str]] = None) -> bool:
+        """Process a single video/audio file.
+
+        Parameters:
+            device: Primary requested device (legacy flag).
+            device_order: Optional ordered list of devices to try. Recognized tokens:
+                - 'cuda': NVIDIA GPU via CUDA
+                - 'igpu': Integrated GPU placeholder (currently maps to optimized CPU path)
+                - 'cpu': Standard CPU execution
+        If device_order is provided it takes precedence over automatic internal fallback logic; we iterate devices.
+        """
+        if device_order:
+            # Normalize + deduplicate while preserving order
+            seen = set()
+            norm_order = []
+            for d in device_order:
+                d_norm = d.strip().lower()
+                if d_norm in ("gpu",):
+                    d_norm = 'cuda'
+                if d_norm not in {"cuda", "igpu", "cpu"}:
+                    console.print(f"[yellow]Ignoring unknown device token: {d}[/yellow]")
+                    continue
+                if d_norm not in seen:
+                    norm_order.append(d_norm)
+                    seen.add(d_norm)
+            if not norm_order:
+                norm_order = [device]
+            for idx, d_try in enumerate(norm_order):
+                last = (idx == len(norm_order)-1)
+                # For 'igpu' we currently map to CPU with int8 preference
+                mapped_device = 'cpu' if d_try == 'igpu' else d_try
+                # Choose compute type heuristics for mapped device
+                ct = compute_type
+                if d_try == 'igpu':
+                    # Prefer int8 (smaller / faster on typical integrated GPUs via CPU fallback)
+                    if ct == 'float16':
+                        ct = 'int8'
+                # Only allow internal fallback on last attempt; earlier attempts should not auto-fallback to mask next devices
+                success = self.process_file(
+                    input_path=input_path,
+                    output_path=output_path,
+                    model_name=model_name,
+                    language=language,
+                    translate=translate,
+                    beam_size=beam_size,
+                    device=mapped_device,
+                    compute_type=ct,
+                    allow_fallback=allow_fallback if last else False,
+                    device_order=None  # prevent recursion loops
+                )
+                if success:
+                    if d_try == 'igpu':
+                        console.print("[green]✓ Completed using 'igpu' (optimized CPU path).[/green]")
+                    return True
+                else:
+                    if not last:
+                        console.print(f"[yellow]Device '{d_try}' failed. Trying next: {norm_order[idx+1]}[/yellow]")
+            return False
         input_path = Path(input_path)
         
         # Validate input
@@ -242,6 +323,45 @@ class WhisperMVPClean:
         if temp_audio_path is None:
             return False
         
+        # Proactive CUDA runtime verification (avoid crash inside transcribe)
+        if self.device == 'cuda':
+            ready, missing = self._check_cuda_runtime()
+            if not ready:
+                console.print("[yellow]Detected GPU but missing runtime DLLs: " + ', '.join(missing) + "[/yellow]")
+                if allow_fallback:
+                    console.print("[yellow]Falling back to CPU before transcription starts.[/yellow]")
+                    # Try a sequence of CPU-friendly compute types
+                    fallback_candidates = []
+                    if orig_compute == 'float16':
+                        fallback_candidates.extend(['int8_float16', 'int8', 'float32'])
+                    else:
+                        fallback_candidates.append(orig_compute)
+                        if orig_compute != 'int8':
+                            fallback_candidates.append('int8')
+                        fallback_candidates.append('float32')
+                    loaded = False
+                    last_error = None
+                    for fb_compute in fallback_candidates:
+                        try:
+                            self.model = None
+                            if self.load_model(model_name, 'cpu', fb_compute):
+                                device = 'cpu'
+                                compute_type = fb_compute
+                                loaded = True
+                                console.print(f"[green]✓ CPU fallback using compute type: {fb_compute}[/green]")
+                                break
+                        except Exception as e:  # pragma: no cover
+                            last_error = e
+                            continue
+                    if not loaded:
+                        console.print(f"[red]✗ CPU fallback failed. Tried: {', '.join(fallback_candidates)}[/red]")
+                        if last_error:
+                            console.print(f"[red]{last_error}[/red]")
+                        return False
+                else:
+                    console.print("[red]CUDA runtime incomplete and fallback disabled (--no-fallback). Aborting.[/red]")
+                    return False
+
         try:
             # Transcribe audio
             segments = self.transcribe_audio(temp_audio_path, language, translate, beam_size)
@@ -344,6 +464,8 @@ Examples:
                        default='float16', help='Compute type (default: float16)')
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'],
                        help='Device to use (default: cuda)')
+    parser.add_argument('--device-order',
+                       help='Comma-separated list of devices to try in order (e.g., cuda,igpu,cpu). Overrides --device when provided. igpu currently maps to optimized CPU path.')
     parser.add_argument('--no-fallback', action='store_true',
                        help='Disable automatic CUDA→CPU fallback when GPU initialization fails')
     
@@ -359,6 +481,10 @@ Examples:
         sys.exit(1)
     
     # Process the file
+    device_order = None
+    if args.device_order:
+        device_order = [d.strip() for d in args.device_order.split(',') if d.strip()]
+
     success = app.process_file(
         args.input,
         args.output,
@@ -368,7 +494,8 @@ Examples:
         args.beam,
         args.device,
         args.compute,
-        allow_fallback = (not args.no_fallback)
+        allow_fallback = (not args.no_fallback),
+        device_order = device_order
     )
     
     sys.exit(0 if success else 1)
