@@ -13,6 +13,7 @@ A high-performance command-line tool that generates subtitles from video files u
 - **⚡ Smart Caching**: Models are cached locally for faster subsequent runs
 - **🎯 Configurable**: Choose model size, beam width, and compute precision
 - **📊 Rich UI**: Beautiful terminal interface with progress bars and summaries
+- **🧠 Two-Pass Translation (Optional)**: New `asr_translate_srt.py` script performs ASR first, then high-quality Machine Translation (MT) with quality shaping (CPS, line wrapping, min gaps) and fallback to Whisper internal translation.
 
 ## 📋 Requirements
 
@@ -148,6 +149,88 @@ See the full guide for commands, diagnostics, and DLL remediation.
 | `--beam` | Beam size for decoding (1-10) | 5 |
 | `--compute` | Compute precision (`float16`, `int8_float16`) | `float16` |
 | `--device` | Processing device | `cuda` |
+
+---
+
+## 🧠 Advanced Two-Pass ASR → MT Pipeline (`asr_translate_srt.py`)
+
+If you need higher quality English subtitles from (e.g.) Japanese audio, use the new two-pass pipeline:
+
+1. Pass 1: Whisper ASR (source language transcription)
+2. Pass 2: External MT model (e.g. NLLB) translates clean source text
+3. Shaping: Applies constraints: max chars per line, max lines, max CPS (characters per second), min duration, min gap between subtitles
+4. Fallback: If MT model or dependencies unavailable, it automatically performs a second Whisper translation pass
+
+### Why Two-Pass?
+Whisper’s built-in translate mode is convenient but sometimes:
+- Produces looser English phrasing
+- Loses nuance for Japanese honorifics or compound verbs
+- Can be harder to subtitle cleanly (long lines)
+
+The two-pass approach improves segmentation fidelity and gives you deterministic MT constraints.
+
+### Additional Dependencies (Optional Feature)
+These are only required if you use `asr_translate_srt.py` with external MT:
+```
+transformers
+sentencepiece
+torch            # (GPU strongly recommended for large MT models)
+```
+They are already listed in `requirements.txt`, but you can skip installing them if you only use `whisper_clean.py`.
+
+### Usage Examples
+```powershell
+# Japanese → English using NLLB distilled 600M (default)
+.\.venv\Scripts\python.exe asr_translate_srt.py "anime_episode.mkv" --language ja
+
+# Force CPU (slow) and skip external MT (use Whisper internal translation)
+.\.venv\Scripts\python.exe asr_translate_srt.py "anime.mkv" --language ja --no-mt --task translate --device cpu
+
+# Use larger MT model (needs more VRAM)
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --mt-model facebook/nllb-200-1.3B
+
+# Tune quality constraints
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --max-line-chars 40 --max-lines 2 --max-cps 16 --min-gap 0.12
+
+# Dry run (no file written)
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --dry-run
+```
+
+### Key Options (Two-Pass Script)
+| Flag | Purpose | Default |
+|------|---------|---------|
+| `--language` | Source language (e.g. `ja`) | required/auto |
+| `--asr-model` | Whisper model name/path | `medium` |
+| `--mt-model` | Hugging Face MT model | `facebook/nllb-200-distilled-600M` |
+| `--no-mt` | Disable external MT (use Whisper translation) | off |
+| `--task` | If `translate` & `--no-mt`, first pass translates directly | `transcribe` |
+| `--beam-size` | Whisper beam size | 5 |
+| `--mt-beams` | MT beam size | 4 |
+| `--batch-size` | MT batch size | 8 |
+| `--max-new-tokens` | MT generation cap | 200 |
+| `--max-line-chars` | Max chars per subtitle line | 42 |
+| `--max-lines` | Max lines per subtitle block | 2 |
+| `--max-cps` | Max characters per second | 17.0 |
+| `--min-duration` | Min subtitle duration (s) | 1.0 |
+| `--min-gap` | Min gap between subtitles (s) | 0.09 |
+| `--vad-filter` | Enable whisper VAD | off |
+| `--dry-run` | Process but do not write SRT | off |
+
+### Performance Notes
+- NLLB 600M can run on mid-range GPUs; larger variants (1.3B / 3.3B) need substantial VRAM.
+- For constrained GPUs, lower batch size (`--batch-size 2` or `4`).
+- CPU MT is functional but slow for long content.
+- If MT fails mid-run, you’ll see a yellow fallback message and the pipeline will still complete with Whisper translations.
+
+### When to Prefer `whisper_clean.py`
+| Scenario | Tool |
+|----------|------|
+| Fast one-shot transcription/translation | `whisper_clean.py` |
+| Need subtitle shaping + CPS control | `asr_translate_srt.py` |
+| No MT dependencies installed | `whisper_clean.py` |
+| Strict accuracy for JP→EN phrasing | `asr_translate_srt.py` |
+
+---
 
 ## 🎯 Model Selection Guide
 

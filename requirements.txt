@@ -5,17 +5,27 @@
 
 # Alternative: Traditional method (may have PyAV issues on Windows)
 faster-whisper>=1.0.0      # Main Whisper implementation with CUDA support
-rich>=13.0.0                # Beautiful terminal interface
+rich>=13.0.0               # Beautiful terminal interface & progress bars
 
 # Core dependencies (install manually for clean setup)
-ctranslate2>=4.0.0         # High-performance inference engine  
-tokenizers>=0.20.0         # Text tokenization
-transformers>=4.50.0       # Hugging Face transformers
-onnxruntime>=1.20.0        # ONNX runtime for model inference
-av==11.0.0                 # PyAV for video/audio processing (specific version for Windows compatibility)
+ctranslate2>=4.0.0         # High-performance inference engine (paired with faster-whisper)
+tokenizers>=0.20.0         # Text tokenization (needed by transformers & faster-whisper)
+transformers>=4.50.0       # (Optional) External MT models for two-pass pipeline (`asr_translate_srt.py`)
+sentencepiece>=0.1.99      # (Optional) Required by many multilingual MT models (NLLB, M2M)
+torch>=2.2.0               # (Optional) Needed for transformers MT on GPU/CPU; ensure CUDA build for GPU
+onnxruntime>=1.20.0        # ONNX runtime (used internally by some pipelines; keep for compatibility)
+av==11.0.0                 # PyAV (legacy scripts only); not required by `whisper_clean.py`
 
-# Note: FFmpeg binary must be installed separately
-# Windows PowerShell (recommended):
-# New-Item -ItemType Directory -Path "C:\ffmpeg" -Force
-# $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-# ... (see README.md for full installation script)
+# --- OPTIONAL INSTALL STRATEGIES ---
+# Minimal core (fast, no external MT):
+#   pip install faster-whisper rich ctranslate2 tokenizers
+# Add two-pass MT capability:
+#   pip install transformers sentencepiece torch
+# If torch GPU wheels needed, include the extra index (adjust cu121 for your CUDA):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Optional extras pattern (manual):
+#   pip install -r requirements.txt  # full
+# OR create your own 'requirements-core.txt' with only the minimal lines above.
+
+# Note: FFmpeg binary must be installed separately (see README for script)

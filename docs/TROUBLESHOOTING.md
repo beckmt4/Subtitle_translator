@@ -181,3 +181,99 @@ Collect this info and open an issue:
 
 ---
 Happy transcribing! 📝
+
+---
+
+## 🌐 Two-Pass ASR → MT Pipeline (Advanced Troubleshooting)
+
+If you're using `asr_translate_srt.py` for higher-quality translation + subtitle shaping, this section covers failures specific to the second (MT) pass.
+
+### Failure Modes & Messages
+| Message Snippet | Meaning | Automatic Action |
+|-----------------|---------|------------------|
+| `MT dependencies missing (torch/transformers)` | `transformers` / `torch` not installed | Falls back to internal Whisper translation pass |
+| `Failed to load MT model` | Model name invalid or HF download failed | Falls back to Whisper translation |
+| `External MT failed:` (exception) | Runtime OOM / decoding error | Re-runs a Whisper translation pass |
+| (No warning, but output seems untranslated) | Ran with `--no-mt` | Expected – only ASR performed |
+
+### Verifying MT Dependencies
+```powershell
+.\.venv\Scripts\python.exe -c "import transformers, sentencepiece, torch; print('deps ok')"
+```
+If this fails, reinstall selectively:
+```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade transformers sentencepiece torch --extra-index-url https://download.pytorch.org/whl/cu121
+```
+Adjust CUDA wheel index (`cu121`) to match your installed CUDA runtime if needed.
+
+### Reducing MT Memory Use
+| Issue | Mitigation |
+|-------|------------|
+| CUDA OOM loading MT model | Use distilled model (default 600M) or smaller ALT model |
+| OOM during generation | Reduce `--batch-size` and/or `--max-new-tokens` |
+| Slow decoding | Lower `--mt-beams`; consider CPU offload if GPU contention |
+| Fragmented VRAM | Run `nvidia-smi`, close other apps, retry |
+
+### Subtitle Shaping Controls
+| Flag | Impact |
+|------|--------|
+| `--max-line-chars` | Hard wrap width target per line |
+| `--max-lines` | Max lines per subtitle block (truncate beyond) |
+| `--max-cps` | Ensures readability; truncates/wraps to fit time window |
+| `--min-gap` | Avoids overlapping / visually merged subtitles |
+| `--min-duration` | Prevents flicker-fast subtitles |
+
+If lines appear truncated: raise `--max-line-chars` or `--max-cps`.
+
+### Diagnosing Incorrect Alignment After Fallback
+If external MT fails and Whisper translation pass runs, segment ordering is aligned naively by index. Very rare desync may occur if Whisper re-segments differently in translation mode.
+Workaround:
+1. Re-run with `--no-mt --task translate` (single-pass) to compare.
+2. If mismatch persists, try lowering beam size (reduces re-segmentation variance).
+
+### MT Model Download Failures
+Symptoms: Long pause then timeout / SSL error.
+Causes: Corporate proxy, intermittent network.
+Mitigation:
+```powershell
+setx HF_HUB_ENABLE_HF_TRANSFER 1
+```
+Or pre-download manually:
+```powershell
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='facebook/nllb-200-distilled-600M')"
+```
+
+### Forcing Strict Failure (CI)
+Use `--no-mt` plus environment enforcement:
+```powershell
+if (-not (.\.venv\Scripts\python.exe -c "import torch" 2>$null)) { throw 'Torch missing' }
+```
+
+### Collecting MT Debug Info
+```powershell
+.\.venv\Scripts\python.exe - <<'PY'
+import torch, transformers, platform
+print('torch cuda:', torch.cuda.is_available())
+print('torch version:', torch.__version__)
+print('platform:', platform.platform())
+from transformers import AutoTokenizer
+print('HF ok; sample vocab load:')
+tok = AutoTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
+print('vocab size:', len(tok))
+PY
+```
+
+### When To Use Single-Pass Instead
+| Scenario | Prefer |
+|----------|--------|
+| Need speed over nuance | `whisper_clean.py` |
+| No MT dependencies installed | `whisper_clean.py` |
+| Subtitle shaping & CPS critical | `asr_translate_srt.py` |
+| Highest JP → EN fidelity | `asr_translate_srt.py` |
+
+### Planned Enhancements (Pipeline)
+- Optional JSON sidecar with per-line CPS metrics
+- Adaptive re-segmentation if MT expansion causes overflow
+- Shared model cache warm-up util
+
+---
