@@ -1,0 +1,57 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# C extensions
+*.so
+
+# Logs / temp
+*.log
+*.tmp
+*.temp
+
+# Test / coverage
+.pytest_cache/
+.coverage*
+htmlcov/
+.cache/
+
+# IDE / editor
+.vscode/
+*.code-workspace
+.idea/
+*.iml
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local environment / tooling
+.env
+.env.*
+
+# Model / cache directories (optional — comment out if you want them tracked)
+# huggingface cache can be huge; keep it out of git
+.cache/
+
+# Generated subtitles (uncomment to ignore all .srt outputs project-wide)
+# *.srt
+
+# FFmpeg temp files
+ffmpeg_*.txt
