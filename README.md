@@ -63,6 +63,73 @@ choco install ffmpeg
 
 ### 2. Setup Python Environment
 
+You have two options: the automated PowerShell script (recommended) or manual steps.
+
+#### Option A: Automated Script (Recommended)
+
+`setup.ps1` creates (or refreshes) the virtual environment, installs a **known-good pinned set** of packages, optionally pre-downloads a model, and can run validation.
+
+Basic usage:
+```powershell
+cd ~\Projects\Subtitle_translator
+pwsh -File .\setup.ps1
+```
+
+Warm up the medium model (downloads it once so first real run is faster):
+```powershell
+pwsh -File .\setup.ps1 -Model medium
+```
+
+Force a clean rebuild of the virtual environment:
+```powershell
+pwsh -File .\setup.ps1 -Force -Model small
+```
+
+Skip validation or FFmpeg check (useful in CI or offline):
+```powershell
+pwsh -File .\setup.ps1 -NoValidate -NoFFmpegCheck
+```
+
+Use a specific Python interpreter:
+```powershell
+pwsh -File .\setup.ps1 -Python "C:\\Python311\\python.exe" -Model small
+```
+
+Quiet mode (minimal output):
+```powershell
+pwsh -File .\setup.ps1 -Quiet
+```
+
+Auto-open a new shell with the virtual environment activated (convenience):
+```powershell
+pwsh -File .\setup.ps1 -LaunchShell
+```
+This leaves your current window unchanged and opens a new one already inside the venv.
+
+Flags overview:
+
+| Flag | Purpose |
+|------|---------|
+| `-Force` | Delete and recreate `.venv` even if it exists |
+| `-Model <name>` | Pre-download & warm up a model (`tiny`, `base`, `small`, `medium`, `large-v3`) |
+| `-Python <path>` | Use a specific Python executable |
+| `-NoValidate` | Skip running `test_clean.py` after install |
+| `-NoFFmpegCheck` | Skip FFmpeg availability check |
+| `-Quiet` | Suppress non-error informational output |
+| `-LaunchShell` | Open a new PowerShell window with the venv activated |
+
+After completion activate the environment:
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Then run:
+```powershell
+python whisper_clean.py test_video.mp4 --model small
+```
+
+#### Option B: Manual Steps
+
 ```powershell
 # Navigate to project directory
 cd ~\Projects\Subtitle_translator
@@ -73,7 +140,7 @@ python -m venv .venv
 
 # Install dependencies (clean method - recommended)
 pip install faster-whisper --no-deps
-pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
+pip install ctranslate2==4.5.0 tokenizers transformers rich onnxruntime av==11.0.0
 ```
 
 ### 3. Verify Setup
