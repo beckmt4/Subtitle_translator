@@ -1,0 +1,8 @@
+# Core dependencies for GPU-accelerated subtitle generation
+faster-whisper>=1.0.0      # Main Whisper implementation with CUDA support
+ffmpeg-python>=0.2.0        # Audio extraction from video files
+rich>=13.0.0                # Beautiful terminal interface
+
+# Note: Also requires FFmpeg binary to be installed separately
+# Windows: choco install ffmpeg
+# Or download from: https://www.gyan.dev/ffmpeg/builds/
