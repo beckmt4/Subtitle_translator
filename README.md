@@ -190,8 +190,12 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 # Tune quality constraints
 .\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18
 
-# Dry run (no file written)
-.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --dry-run
+# Best-of-breed local model commands
+# For RTX A3000 (12GB VRAM):
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --asr-model large-v3 --mt-model facebook/nllb-200-1.3B --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18 --batch-size 8 --beam-size 8 --mt-beams 4 --compute float16 --device cuda
+
+# For RTX 4090 (24GB VRAM):
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --asr-model large-v3 --mt-model facebook/nllb-200-3.3B --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18 --batch-size 16 --beam-size 10 --mt-beams 6 --compute float16 --device cuda
 ```
 
 ### Key Options (Two-Pass Script)
