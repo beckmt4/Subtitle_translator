@@ -65,7 +65,7 @@ choco install ffmpeg
 
 ```powershell
 # Navigate to project directory
-cd Subtitle_translator
+cd ~\Projects\Subtitle_translator
 
 # Create and activate virtual environment
 python -m venv .venv
@@ -73,7 +73,7 @@ python -m venv .venv
 
 # Install dependencies (clean method - recommended)
 pip install faster-whisper --no-deps
-pip install ctranslate2 tokenizers transformers rich onnxruntime
+pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
 ```
 
 ### 3. Verify Setup
@@ -246,9 +246,63 @@ $env:PATH = "$binPath;$env:PATH"
 # Upgrade pip and try again
 python -m pip install --upgrade pip
 
-# Clean installation method:
+# Clean installation method (recommended for Windows):
 pip install faster-whisper --no-deps
-pip install ctranslate2 tokenizers transformers rich onnxruntime
+pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
+```
+
+## 🛠 Additional Troubleshooting (Advanced)
+
+### A. NumPy "source directory" Import Error
+If you see:
+```
+Error importing numpy: you should not try to import numpy from its source directory
+```
+It usually means the interpreter is resolving NumPy from a global install instead of your virtual environment.
+
+Fix:
+```powershell
+# Ensure you're in the project root
+cd ~\Projects\Subtitle_translator
+
+# Explicitly use venv Python for installs
+.\.venv\Scripts\python.exe -m pip install --upgrade --force-reinstall numpy
+
+# Verify it points inside .venv
+.\.venv\Scripts\python.exe -c "import numpy, sys; print(numpy.__file__)"
+
+# You should see a path like:
+# ...\Subtitle_translator\.venv\Lib\site-packages\numpy\__init__.py
+
+# If it still points to a global path, reactivate the environment:
+.\.venv\Scripts\Activate.ps1
+```
+
+### B. ctranslate2 AttributeError (StorageView)
+If faster-whisper import fails with something like:
+```
+AttributeError: module 'ctranslate2' has no attribute 'StorageView'
+```
+This is a version mismatch between `faster-whisper` and `ctranslate2`.
+
+Resolution (working combo):
+```powershell
+.\.venv\Scripts\python.exe -m pip install --force-reinstall "ctranslate2==4.5.0" "faster-whisper==1.2.0"
+```
+Re-run validation:
+```powershell
+.\.venv\Scripts\python.exe test_clean.py
+```
+
+### C. Clean Rebuild (Last Resort)
+```powershell
+# From project root
+Remove-Item -Recurse -Force .venv
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install faster-whisper --no-deps
+pip install ctranslate2==4.5.0 tokenizers transformers rich onnxruntime av==11.0.0
+.\.venv\Scripts\python.exe test_clean.py
 ```
 
 ### Performance Optimization

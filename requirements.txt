@@ -1,7 +1,7 @@
 # Clean installation method (recommended for Windows)
 # Install faster-whisper without dependencies to avoid PyAV issues:
 # pip install faster-whisper --no-deps
-# pip install ctranslate2 tokenizers transformers rich onnxruntime
+# pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
 
 # Alternative: Traditional method (may have PyAV issues on Windows)
 faster-whisper>=1.0.0      # Main Whisper implementation with CUDA support
@@ -12,6 +12,7 @@ ctranslate2>=4.0.0         # High-performance inference engine
 tokenizers>=0.20.0         # Text tokenization
 transformers>=4.50.0       # Hugging Face transformers
 onnxruntime>=1.20.0        # ONNX runtime for model inference
+av==11.0.0                 # PyAV for video/audio processing (specific version for Windows compatibility)
 
 # Note: FFmpeg binary must be installed separately
 # Windows PowerShell (recommended):
