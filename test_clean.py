@@ -72,7 +72,30 @@ def test_cuda():
         try:
             device = ctranslate2.get_cuda_device_count()
             if device > 0:
-                print(f"✅ CUDA devices available: {device}")
+                print(f"✅ CUDA devices reported by driver: {device}")
+                # Additional DLL diagnostics (common missing runtime libs)
+                missing = []
+                dlls = [
+                    'cudart64_12.dll',
+                    'cublas64_12.dll',
+                    'cublasLt64_12.dll',
+                    'cudnn_ops64_9.dll'
+                ]
+                for name in dlls:
+                    # Use where.exe to probe PATH (fast, Windows native)
+                    try:
+                        r = subprocess.run(['where', name], capture_output=True, text=True)
+                        if r.returncode != 0:
+                            missing.append(name)
+                    except Exception:
+                        # If where fails just skip
+                        pass
+                if missing:
+                    print("⚠️  GPU detected but missing runtime DLLs (CUDA toolkit / cuDNN not fully installed):")
+                    for m in missing:
+                        print(f"   - {m}")
+                    print("   → Transcription will automatically fall back to CPU unless you install CUDA Toolkit 12.x + cuDNN 9.")
+                    return False  # Mark as not fully usable
                 return True
             else:
                 print("⚠️  No CUDA devices found - will use CPU")

@@ -76,7 +76,7 @@ class WhisperMVPClean:
         except Exception as e:
             console.print(f"[red]✗ Failed to load model: {e}[/red]")
             if "CUDA" in str(e) or "cuda" in str(e):
-                console.print("[yellow]Tip: Try --device cpu if CUDA is not available[/yellow]")
+                console.print("[yellow]Tip: Try --device cpu if CUDA is not available or install CUDA Toolkit + cuDNN[/yellow]")
             return False
     
     def extract_audio_ffmpeg(self, input_path: str) -> Optional[str]:
@@ -188,10 +188,11 @@ class WhisperMVPClean:
         
         return '\n'.join(srt_content)
     
-    def process_file(self, input_path: str, output_path: Optional[str] = None,
+    def process_file(self, input_path: str | Path, output_path: Optional[str | Path] = None,
                     model_name: str = "medium", language: Optional[str] = None,
                     translate: bool = False, beam_size: int = 5,
-                    device: str = "cuda", compute_type: str = "float16") -> bool:
+                    device: str = "cuda", compute_type: str = "float16",
+                    allow_fallback: bool = True) -> bool:
         """Process a single video/audio file."""
         input_path = Path(input_path)
         
@@ -212,9 +213,29 @@ class WhisperMVPClean:
         
         console.print(Panel(f"[bold]Processing: {input_path.name}[/bold]"))
         
-        # Load model
+        # Adjust compute type for CPU if user asked for float16 (unsupported efficiently)
+        orig_device = device
+        orig_compute = compute_type
+        if device == 'cpu' and compute_type == 'float16':
+            # Choose a more appropriate compute type for CPU
+            compute_type = 'int8_float16'
+            console.print("[yellow]Float16 not efficient on CPU. Using int8_float16 instead.[/yellow]")
+
+        # Load model (with potential fallback logic inside this scope)
         if not self.load_model(model_name, device, compute_type):
-            return False
+            # If initial load failed on CUDA and fallback allowed, attempt CPU
+            if device == 'cuda' and allow_fallback:
+                console.print("[yellow]Attempting automatic fallback to CPU...[/yellow]")
+                # Reset model reference
+                self.model = None
+                # Switch compute type if needed
+                fb_compute = 'int8_float16' if orig_compute == 'float16' else orig_compute
+                if not self.load_model(model_name, 'cpu', fb_compute):
+                    return False
+                device = 'cpu'
+                compute_type = fb_compute
+            else:
+                return False
         
         # Extract audio with FFmpeg
         temp_audio_path = self.extract_audio_ffmpeg(str(input_path))
@@ -224,6 +245,23 @@ class WhisperMVPClean:
         try:
             # Transcribe audio
             segments = self.transcribe_audio(temp_audio_path, language, translate, beam_size)
+
+            # If transcription failed due to CUDA/cuDNN error and fallback allowed, retry on CPU
+            if not segments and orig_device == 'cuda' and self.device == 'cuda' and allow_fallback:
+                # Heuristic: attempt fallback if common cuda/cudnn markers appear in recent stderr (not captured here) or segments empty after CUDA start
+                console.print("[yellow]CUDA transcription failed. Retrying on CPU (fallback).[/yellow]")
+                try:
+                    self.model = None
+                    fb_compute = 'int8_float16' if orig_compute == 'float16' else orig_compute
+                    if not self.load_model(model_name, 'cpu', fb_compute):
+                        return False
+                    segments = self.transcribe_audio(temp_audio_path, language, translate, beam_size)
+                    if not segments:
+                        return False
+                    device = 'cpu'
+                except Exception as e:
+                    console.print(f"[red]✗ CPU fallback failed: {e}[/red]")
+                    return False
             
             if not segments:
                 console.print("[red]✗ No segments generated[/red]")
@@ -249,6 +287,8 @@ class WhisperMVPClean:
                     os.unlink(temp_audio_path)
             except Exception:
                 pass
+        # Should not reach here; explicit False for static analysis
+        return False
     
     def display_summary(self, segments: List[dict], input_name: str, output_path: str):
         """Display processing summary."""
@@ -304,6 +344,8 @@ Examples:
                        default='float16', help='Compute type (default: float16)')
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'],
                        help='Device to use (default: cuda)')
+    parser.add_argument('--no-fallback', action='store_true',
+                       help='Disable automatic CUDA→CPU fallback when GPU initialization fails')
     
     args = parser.parse_args()
     
@@ -325,7 +367,8 @@ Examples:
         args.translate,
         args.beam,
         args.device,
-        args.compute
+        args.compute,
+        allow_fallback = (not args.no_fallback)
     )
     
     sys.exit(0 if success else 1)

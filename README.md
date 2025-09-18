@@ -318,6 +318,67 @@ pip install faster-whisper --no-deps
 pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
 ```
 
+**6. Missing CUDA / cuDNN DLLs (e.g., `cudnn_ops64_9.dll`, `cublas64_12.dll`)**
+
+Symptoms:
+```
+Could not locate cudnn_ops64_9.dll
+... or errors mentioning cublas / cudart / cudnnCreateTensorDescriptor
+```
+
+What’s happening:
+- The NVIDIA driver lets `ctranslate2` detect a CUDA-capable GPU (so it reports a device), **but** the user‑space runtime DLLs (CUDA Toolkit + cuDNN) are not present in your PATH.
+- When transcription starts, faster-whisper tries to initialize cuDNN and fails.
+
+Automatic Fallback:
+- `whisper_clean.py` now automatically retries on CPU if GPU initialization/transcription fails.
+- You will see: `Attempting automatic fallback to CPU...` or `CUDA transcription failed. Retrying on CPU (fallback).`
+- Disable this behavior with `--no-fallback` if you prefer a hard failure (useful in CI to enforce GPU availability).
+
+Permanent Fix (Recommended to restore GPU speed):
+1. Install the latest **CUDA Toolkit 12.x** from NVIDIA (https://developer.nvidia.com/cuda-downloads) – choose Express install.
+2. Install **cuDNN 9** for Windows (requires free NVIDIA developer login):
+	 - Download cuDNN (matching CUDA 12) from https://developer.nvidia.com/cudnn
+	 - Extract and copy the `bin/*.dll` files into either:
+		 - `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.X\bin` (preferred), or
+		 - A directory added to your User PATH.
+3. Open a **new** PowerShell window (PATH changes require a new session).
+4. Verify DLL availability:
+```powershell
+Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Recurse -Filter cudnn*64_9.dll
+```
+5. Re-run validation:
+```powershell
+.\.venv\Scripts\python.exe test_clean.py
+```
+
+Quick Diagnostic (optional):
+```powershell
+$dlls = 'cudart64_12.dll','cublas64_12.dll','cublasLt64_12.dll','cudnn_ops64_9.dll'
+foreach ($d in $dlls) { "$d => " + ([bool](Get-Command $d -ErrorAction SilentlyContinue)) }
+```
+
+If GPU still fails, the script will continue on CPU (slower but functional). To force investigation instead of fallback, run with:
+```powershell
+.\.venv\Scripts\python.exe whisper_clean.py video.mp4 --device cuda --no-fallback
+```
+
+Edge Case – CPU float16:
+- If you supplied `--compute float16` but end up on CPU (manual or fallback), the tool automatically switches to `int8_float16` because pure float16 isn’t efficient/available on CPU.
+
+Summary Table:
+| Situation | Behavior |
+|-----------|----------|
+| Missing cuDNN DLLs | Automatic CPU retry (unless `--no-fallback`) |
+| Driver only (no toolkit) | Fallback triggers at first transcription attempt |
+| Proper CUDA + cuDNN installed | Full GPU speed maintained |
+| `--no-fallback` set | Program exits on CUDA failure |
+
+Flag Documentation Addition:
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--no-fallback` | Disable automatic CUDA→CPU fallback | Disabled (fallback enabled) |
+
 ## 🛠 Additional Troubleshooting (Advanced)
 
 ### A. NumPy "source directory" Import Error
