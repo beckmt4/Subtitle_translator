@@ -16,6 +16,12 @@ torch>=2.2.0               # (Optional) Needed for transformers MT on GPU/CPU; e
 onnxruntime>=1.20.0        # ONNX runtime (used internally by some pipelines; keep for compatibility)
 av==11.0.0                 # PyAV (legacy scripts only); not required by `whisper_clean.py`
 
+# Optional performance improvement when downloading models from repos with Xet storage enabled.
+# Installs the Xet filesystem helper to avoid fallback to slower HTTP and removes the runtime warning:
+#   "Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed..."
+# Safe to omit; you can add later with: pip install "huggingface_hub[hf_xet]"  OR  pip install hf_xet
+huggingface_hub[hf_xet]>=0.24.0   # (Optional) Enable accelerated Xet-backed model downloads
+
 # --- OPTIONAL INSTALL STRATEGIES ---
 # Minimal core (fast, no external MT):
 #   pip install faster-whisper rich ctranslate2 tokenizers

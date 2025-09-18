@@ -615,6 +615,8 @@ Examples:
                        help='Language code metadata for remuxed subtitle track (default: source language or en if translated)')
     parser.add_argument('--remux-overwrite', action='store_true',
                        help='Overwrite existing .subbed file if present')
+    parser.add_argument('--diag', action='store_true',
+                       help='Print diagnostics about model/device, CUDA availability, and compute type')
     
     args = parser.parse_args()
     
@@ -647,6 +649,33 @@ Examples:
         remux_language = args.remux_language,
         remux_overwrite = args.remux_overwrite
     )
+
+    if success and args.diag:
+        # Diagnostics: report CUDA DLL presence, device actually used, compute type
+        used_device = app.device or args.device
+        compute = app.compute_type
+        try:
+            import torch
+            torch_cuda = torch.cuda.is_available()
+            gpu_name = torch.cuda.get_device_name(0) if torch_cuda else 'N/A'
+            torch_version = torch.__version__
+        except Exception:
+            torch_cuda = False
+            gpu_name = 'N/A'
+            torch_version = 'missing'
+        ready, missing = app._check_cuda_runtime()
+        console.rule("Diagnostics")
+        console.print(f"Model: {app.model_name}")
+        console.print(f"Requested Device: {args.device} | Used Device: {used_device}")
+        console.print(f"Compute Type: {compute}")
+        console.print(f"Torch CUDA Available: {torch_cuda} (torch {torch_version})")
+        console.print(f"GPU: {gpu_name}")
+        if used_device == 'cuda':
+            if ready:
+                console.print("CUDA Runtime DLL Check: OK")
+            else:
+                console.print(f"[yellow]Missing CUDA/cuDNN DLLs: {', '.join(missing)}[/yellow]")
+        console.rule()
     
     sys.exit(0 if success else 1)
 

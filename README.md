@@ -149,6 +149,7 @@ See the full guide for commands, diagnostics, and DLL remediation.
 | `--beam` | Beam size for decoding (1-10) | 5 |
 | `--compute` | Compute precision (`float16`, `int8_float16`) | `float16` |
 | `--device` | Processing device | `cuda` |
+| `--diag` | Print diagnostics (device actually used, compute type, CUDA DLL status) | off |
 
 ---
 
@@ -163,9 +164,6 @@ If you need higher quality English subtitles from (e.g.) Japanese audio, use the
 
 ### Why Two-Pass?
 Whisper’s built-in translate mode is convenient but sometimes:
-- Produces looser English phrasing
-- Loses nuance for Japanese honorifics or compound verbs
-- Can be harder to subtitle cleanly (long lines)
 
 The two-pass approach improves segmentation fidelity and gives you deterministic MT constraints.
 
@@ -190,7 +188,7 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 .\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --mt-model facebook/nllb-200-1.3B
 
 # Tune quality constraints
-.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --max-line-chars 40 --max-lines 2 --max-cps 16 --min-gap 0.12
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18
 
 # Dry run (no file written)
 .\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --dry-run
@@ -216,6 +214,7 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 | `--vad-filter` | Enable whisper VAD | off |
 | `--dry-run` | Process but do not write SRT | off |
 | `--model-progress` | Show heuristic model download progress while loading | off |
+| `--diag` | Print diagnostics (devices, torch CUDA, GPU name, MT placement) | off |
 
 ### Performance Notes
 - NLLB 600M can run on mid-range GPUs; larger variants (1.3B / 3.3B) need substantial VRAM.
@@ -223,6 +222,19 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 - CPU MT is functional but slow for long content.
 - If MT fails mid-run, you’ll see a yellow fallback message and the pipeline will still complete with Whisper translations.
  - First-time model load can appear static; use `--model-progress` to display approximate cache download percentage.
+
+#### Optional: Faster Model Downloads on Xet-Backed Repos
+If you see this message while a model downloads:
+```
+Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back to regular HTTP download.
+```
+You can silence it and sometimes improve large model pull speed by installing the Xet integration:
+```
+pip install "huggingface_hub[hf_xet]"
+# or
+pip install hf_xet
+```
+Already handled if you used `setup.ps1` after this date (it installs the extra). Safe to ignore if you don't mind standard HTTP downloads.
 
 ### When to Prefer `whisper_clean.py`
 | Scenario | Tool |

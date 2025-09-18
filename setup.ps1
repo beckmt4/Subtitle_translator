@@ -105,7 +105,8 @@ $packages = @(
     'tokenizers',
     'transformers',
     'rich',
-    'onnxruntime'
+    'onnxruntime',
+    'huggingface_hub[hf_xet]'
 )
 & $venvPython -m pip install --upgrade --no-cache $packages
 if($LASTEXITCODE -ne 0){ Write-Err "Package installation failed"; exit 1 }

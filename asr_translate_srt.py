@@ -59,6 +59,34 @@ def load_mt_model(model_name: str, device: str):
         console.print(f"[yellow]Failed to load MT model {model_name}: {e}. Falling back to Whisper translation.[/yellow]")
         return None, None
 
+def print_diagnostics(asr_model_obj, mt_tok, mt_model, args):
+    """Print runtime diagnostics about devices, precision, and availability."""
+    try:
+        import torch
+        torch_available = torch.cuda.is_available()
+        torch_version = getattr(torch, '__version__', 'unknown')
+        gpu_name = torch.cuda.get_device_name(0) if torch_available else 'N/A'
+    except Exception:
+        torch_available = False
+        torch_version = 'missing'
+        gpu_name = 'N/A'
+    # WhisperModel exposes model_size and device via attributes we stored in args indirectly
+    console.rule("Diagnostics")
+    console.print(f"ASR Model: {args.asr_model}")
+    console.print(f"ASR Device Requested: {args.device}")
+    console.print(f"CUDA Available (torch): {torch_available}")
+    console.print(f"Torch Version: {torch_version}")
+    console.print(f"GPU: {gpu_name}")
+    if mt_model is not None:
+        try:
+            import torch
+            console.print(f"MT Model: {args.mt_model} (device={mt_model.device}, dtype={next(mt_model.parameters()).dtype})")
+        except Exception:
+            console.print(f"MT Model: {args.mt_model} (device=unknown)")
+    else:
+        console.print("MT Model: (none / using Whisper translation)")
+    console.rule()
+
 def run_ffmpeg_extract(input_path: Path, target_sr=16000) -> Path:
     wav_path = input_path.with_suffix(".asr.wav")
     if wav_path.exists():
@@ -202,6 +230,7 @@ def main():
     parser.add_argument("--remux-language", help="Subtitle track language code (default: en if translated else source language).")
     parser.add_argument("--remux-overwrite", action="store_true", help="Overwrite existing .subbed file if present.")
     parser.add_argument("--model-progress", action="store_true", help="Show approximate model download progress (heuristic).")
+    parser.add_argument("--diag", action="store_true", help="Print diagnostics about devices, precision, and MT/ASR placement.")
 
     args = parser.parse_args()
     media_path = Path(args.input)
@@ -305,6 +334,9 @@ def main():
                 cache_thread.join(timeout=2)
         if args.model_progress and progress.tasks[t_model].total:
             progress.update(t_model, completed=100)
+        if args.diag:
+            # Print diagnostics after ASR model is loaded (MT may not be loaded yet)
+            print_diagnostics(asr_model, None, None, args)
 
         t_audio = progress.add_task("Extracting audio", total=100)
         wav_path = run_ffmpeg_extract(media_path)
@@ -341,6 +373,8 @@ def main():
             t_mt = progress.add_task("Loading MT model", total=None)
             tok, mt = load_mt_model(args.mt_model, args.device)
             progress.update(t_mt, completed=100)
+            if args.diag:
+                print_diagnostics(asr_model, tok, mt, args)
 
             if tok and mt:
                 t_translate = progress.add_task("Translating segments", total=len(segments_struct))
