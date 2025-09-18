@@ -29,46 +29,62 @@ A high-performance command-line tool that generates subtitles from video files u
 
 ### 1. Install FFmpeg
 
-**Option A: Using Chocolatey (Recommended)**
+**Option A: Automatic PowerShell Installation (Recommended)**
 ```powershell
-# Install Chocolatey if not already installed
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+# Create FFmpeg directory and download/extract in one go
+New-Item -ItemType Directory -Path "C:\ffmpeg" -Force
+$ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+$zipPath = "$env:TEMP\ffmpeg.zip"
+Invoke-WebRequest -Uri $ffmpegUrl -OutFile $zipPath -UseBasicParsing
+Expand-Archive -Path $zipPath -DestinationPath "C:\ffmpeg" -Force
 
-# Install FFmpeg
+# Add to PATH permanently
+$ffmpegDir = Get-ChildItem "C:\ffmpeg" -Directory | Select-Object -First 1
+$binPath = "$($ffmpegDir.FullName)\bin"
+[Environment]::SetEnvironmentVariable("PATH", [Environment]::GetEnvironmentVariable("PATH", "User") + ";$binPath", "User")
+$env:PATH = "$binPath;$env:PATH"
+
+# Verify installation
+ffmpeg -version
+```
+
+**Option B: Using Chocolatey (If Available)**
+```powershell
+# Install FFmpeg via Chocolatey (requires admin privileges)
 choco install ffmpeg
 ```
 
-**Option B: Manual Installation**
+**Option C: Manual Installation**
 1. Download FFmpeg from: https://www.gyan.dev/ffmpeg/builds/
-2. Extract to `C:\ffmpeg`
-3. Add `C:\ffmpeg\bin` to your Windows PATH
+2. Extract to `C:\ffmpeg\ffmpeg-x.x-essentials_build\`
+3. Add `C:\ffmpeg\ffmpeg-x.x-essentials_build\bin` to your Windows PATH
 
-### 2. Clone and Setup
+### 2. Setup Python Environment
 
 ```powershell
-# Clone the repository
-git clone <your-repo-url>
+# Navigate to project directory
 cd Subtitle_translator
 
 # Create and activate virtual environment
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Verify CUDA Setup
+### 3. Verify Setup
 
 ```powershell
-# Test CUDA availability
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA devices: {torch.cuda.device_count()}')"
+# Run the validation script to check everything is working
+.\.venv\Scripts\python.exe validate_setup.py
 ```
 
-If CUDA is not available, install PyTorch with CUDA support:
-```powershell
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+The validation script will check:
+- ✅ Python version compatibility
+- ✅ All required packages (faster-whisper, ffmpeg-python, rich)
+- ✅ FFmpeg binary availability
+- ✅ CUDA support (optional but recommended)
 
 ## 📖 Usage
 
@@ -76,32 +92,34 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 ```powershell
 # Basic transcription (same language subtitles)
-python whisper_mvp.py video.mp4
+.\.venv\Scripts\python.exe whisper_mvp.py video.mp4
 
 # Translate to English
-python whisper_mvp.py foreign_video.mkv --translate
+.\.venv\Scripts\python.exe whisper_mvp.py foreign_video.mkv --translate
 
 # Specify source language for better accuracy
-python whisper_mvp.py anime.mkv --translate --lang ja
+.\.venv\Scripts\python.exe whisper_mvp.py anime.mkv --translate --lang ja
 
 # Use different model size
-python whisper_mvp.py video.mp4 --model large-v3
+.\.venv\Scripts\python.exe whisper_mvp.py video.mp4 --model large-v3
 
 # Custom output path
-python whisper_mvp.py video.mp4 --output "subtitles/video_subs.srt"
+.\.venv\Scripts\python.exe whisper_mvp.py video.mp4 --output "subtitles/video_subs.srt"
 ```
+
+**Note**: Always use `.\.venv\Scripts\python.exe` to ensure you're using the virtual environment with all the required packages installed.
 
 ### Advanced Options
 
 ```powershell
 # High-quality processing
-python whisper_mvp.py video.mp4 --model large-v3 --beam 10 --compute float16
+.\.venv\Scripts\python.exe whisper_mvp.py video.mp4 --model large-v3 --beam 10 --compute float16
 
 # Batch process entire folder
-python whisper_mvp.py "C:\Videos\Movies" --model medium --translate
+.\.venv\Scripts\python.exe whisper_mvp.py "C:\Videos\Movies" --model medium --translate
 
 # Memory-optimized for smaller GPUs
-python whisper_mvp.py video.mp4 --model small --compute int8_float16
+.\.venv\Scripts\python.exe whisper_mvp.py video.mp4 --model small --compute int8_float16
 ```
 
 ### Command Line Options
@@ -160,31 +178,55 @@ python whisper_mvp.py "Foreign_Video.avi" --translate
 
 ### Common Issues
 
-**1. "CUDA not available" Error**
+**1. "FFmpeg not found" Error**
 ```powershell
-# Install CUDA-enabled PyTorch
-pip uninstall torch torchvision torchaudio
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
-
-**2. "FFmpeg not found" Error**
-```powershell
-# Check if FFmpeg is in PATH
+# First, check if FFmpeg is installed
 ffmpeg -version
 
-# If not found, reinstall FFmpeg and add to PATH
+# If not found, use the automatic installation:
+New-Item -ItemType Directory -Path "C:\ffmpeg" -Force
+$ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+$zipPath = "$env:TEMP\ffmpeg.zip"
+Invoke-WebRequest -Uri $ffmpegUrl -OutFile $zipPath -UseBasicParsing
+Expand-Archive -Path $zipPath -DestinationPath "C:\ffmpeg" -Force
+$ffmpegDir = Get-ChildItem "C:\ffmpeg" -Directory | Select-Object -First 1
+$binPath = "$($ffmpegDir.FullName)\bin"
+[Environment]::SetEnvironmentVariable("PATH", [Environment]::GetEnvironmentVariable("PATH", "User") + ";$binPath", "User")
+$env:PATH = "$binPath;$env:PATH"
 ```
 
-**3. "Out of memory" Error**
+**2. "choco command not found" Error**
+- Chocolatey may not be properly installed or PATH not refreshed
+- Use the automatic PowerShell FFmpeg installation instead (Option A above)
+- Or restart PowerShell/Command Prompt after installing Chocolatey
+
+**3. "CUDA not available" Warning**
+- This is often okay - faster-whisper has built-in CUDA support
+- GPU acceleration will still work if you have NVIDIA drivers installed
+- Only install PyTorch separately if you specifically need it for other purposes
+
+**4. "Out of memory" Error**
 - Use smaller model: `--model small` or `--model base`
 - Use lower precision: `--compute int8_float16`
 - Close other GPU-intensive applications
 
-**4. "Model download failed" Error**
-- Check internet connection
-- Try downloading manually:
+**5. "Package installation failed" Error**
 ```powershell
-python -c "from faster_whisper import WhisperModel; WhisperModel('medium', device='cpu')"
+# Upgrade pip and try again
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# If still failing, install packages individually:
+pip install faster-whisper
+pip install ffmpeg-python
+pip install rich
+```
+
+**6. "Model download failed" Error**
+- Check internet connection
+- Try downloading with CPU first to test:
+```powershell
+python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu')"
 ```
 
 ### Performance Optimization
