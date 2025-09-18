@@ -27,6 +27,45 @@ A high-performance command-line tool that generates subtitles from video files u
 - **CUDA Toolkit** (installed automatically with PyTorch)
 - **FFmpeg** (for audio extraction)
 
+## 🔧 Clean Implementation (Recommended)
+
+Due to persistent Windows compatibility issues with PyAV (av package), we've created a **clean implementation** that bypasses PyAV entirely by using FFmpeg directly:ckages (faster**Key Benefits:**
+- ✅ **No PyAV dependency** - eliminates common Windows compatibility issues
+- ✅ **Direct FFmpeg integration** - more reliable audio extraction
+- ✅ **Same features** - full GPU acceleration, translation, batch processing
+- ✅ **Cleaner codebase** - fewer dependencies, better error handling
+
+## 📖 Usage (Legacy whisper_mvp.py)r, ffmpeg-python, rich)
+- ✅ FFmpeg binary availability
+- ✅ CUDA support (optional but recommended)
+
+## 🔧 Clean Implementation (Recommended)
+
+Due to persistent Windows compatibility issues with PyAV (av package), we've created a **clean implementation** that bypasses PyAV entirely by using FFmpeg directly: that generates subtitles from video files using NVIDIA GPU acceleration and the faster-whisper library. Perfect for creating subtitles for movies, anime, lectures, and any video content.
+
+## ✨ Features
+
+- **🚀 GPU Acceleration**: Uses NVIDIA CUDA for fast transcription with faster-whisper
+- **🎬 Multiple Formats**: Supports all common video/audio formats (MP4, MKV, AVI, MP3, etc.)
+- **🌍 Language Support**: Transcribe in original language or translate to English
+- **📁 Batch Processing**: Process entire folders of videos automatically
+- **⚡ Smart Caching**: Models are cached locally for faster subsequent runs
+- **🎯 Configurable**: Choose model size, beam width, and compute precision
+- **📊 Rich UI**: Beautiful terminal interface with progress bars and summaries
+
+## 📋 Requirements
+
+### System Requirements
+- **Windows 10/11** (64-bit)
+- **NVIDIA GPU** with CUDA support (GTX 1060 or newer recommended)
+- **8GB RAM minimum** (16GB recommended for large models)
+- **2-10GB storage** (for model caching)
+
+### Software Dependencies
+- **Python 3.8+** (Python 3.9+ recommended)
+- **CUDA Toolkit** (installed automatically with PyTorch)
+- **FFmpeg** (for audio extraction)
+
 ## 🚀 Quick Start
 
 ### 1. Install FFmpeg
@@ -71,25 +110,24 @@ cd Subtitle_translator
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Install dependencies (clean method - recommended)
-pip install faster-whisper --no-deps
-pip install ctranslate2 tokenizers transformers rich onnxruntime
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 ### 3. Verify Setup
 
 ```powershell
 # Run the validation script to check everything is working
-.\.venv\Scripts\python.exe test_clean.py
+.\.venv\Scripts\python.exe validate_setup.py
 ```
 
 The validation script will check:
 - ✅ Python version compatibility
-- ✅ All required packages (faster-whisper, ctranslate2, rich)
+- ✅ All required packages (faster-whisper, ffmpeg-python, rich)
 - ✅ FFmpeg binary availability
 - ✅ CUDA support (optional but recommended)
 
-## 🔧 Clean Implementation (Recommended)
+## � Clean Implementation (Recommended)
 
 Due to persistent Windows compatibility issues with PyAV (av package), we've created a **clean implementation** that bypasses PyAV entirely by using FFmpeg directly:
 
@@ -118,7 +156,7 @@ Due to persistent Windows compatibility issues with PyAV (av package), we've cre
 - ✅ **Same features** - full GPU acceleration, translation, batch processing
 - ✅ **Cleaner codebase** - fewer dependencies, better error handling
 
-## 📖 Usage (Legacy whisper_mvp.py)
+## �📖 Usage (Legacy whisper_mvp.py)
 
 ### Basic Commands
 
@@ -197,14 +235,16 @@ Due to persistent Windows compatibility issues with PyAV (av package), we've cre
 
 ```powershell
 # Japanese anime to English subtitles
-.\.venv\Scripts\python.exe whisper_clean.py "Anime Episode.mkv" --translate --lang ja --model medium
+.\.venv\Scripts\python.exe whisper_mvp.py "Anime Episode.mkv" --translate --lang ja --model medium
 
 # French movie with original French subtitles
-.\.venv\Scripts\python.exe whisper_clean.py "French_Film.mp4" --lang fr --model large-v3
+.\.venv\Scripts\python.exe whisper_mvp.py "French_Film.mp4" --lang fr --model large-v3
 
 # Auto-detect language and translate to English
-.\.venv\Scripts\python.exe whisper_clean.py "Foreign_Video.avi" --translate
+.\.venv\Scripts\python.exe whisper_mvp.py "Foreign_Video.avi" --translate
 ```
+
+**Note: If you encounter "No module named 'av._core'" error, this is a known PyAV issue on Windows. See troubleshooting section below for solutions.**
 
 ## 🔧 Troubleshooting
 
@@ -212,7 +252,24 @@ Due to persistent Windows compatibility issues with PyAV (av package), we've cre
 
 **1. "No module named 'av._core'" Error (Most Common on Windows)**
 
-This is a known issue with the PyAV package on Windows. The clean implementation (`whisper_clean.py`) avoids this entirely by using direct FFmpeg calls.
+This is a known issue with the PyAV package on Windows. Here are several solutions:
+
+```powershell
+# Solution A: Try installing a different av version
+pip uninstall av -y
+pip install av==11.0.0
+
+# Solution B: Use conda if available
+conda install av -c conda-forge
+
+# Solution C: Install Microsoft Visual C++ Redistributable
+# Download from: https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+# Solution D: Use openai-whisper as fallback
+pip install openai-whisper
+```
+
+If none of these work, you can use the CPU-only version by modifying the device parameter to "cpu".
 
 **2. "FFmpeg not found" Error**
 ```powershell
@@ -231,6 +288,11 @@ $binPath = "$($ffmpegDir.FullName)\bin"
 $env:PATH = "$binPath;$env:PATH"
 ```
 
+**2. "choco command not found" Error**
+- Chocolatey may not be properly installed or PATH not refreshed
+- Use the automatic PowerShell FFmpeg installation instead (Option A above)
+- Or restart PowerShell/Command Prompt after installing Chocolatey
+
 **3. "CUDA not available" Warning**
 - This is often okay - faster-whisper has built-in CUDA support
 - GPU acceleration will still work if you have NVIDIA drivers installed
@@ -245,10 +307,19 @@ $env:PATH = "$binPath;$env:PATH"
 ```powershell
 # Upgrade pip and try again
 python -m pip install --upgrade pip
+pip install -r requirements.txt
 
-# Clean installation method:
-pip install faster-whisper --no-deps
-pip install ctranslate2 tokenizers transformers rich onnxruntime
+# If still failing, install packages individually:
+pip install faster-whisper
+pip install ffmpeg-python
+pip install rich
+```
+
+**6. "Model download failed" Error**
+- Check internet connection
+- Try downloading with CPU first to test:
+```powershell
+python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu')"
 ```
 
 ### Performance Optimization
@@ -316,13 +387,13 @@ Models are cached in the default Hugging Face cache directory:
 - Windows: `%USERPROFILE%\.cache\huggingface\hub`
 
 ### Custom Cache Directory
-```bash
+```python
 # Set custom cache directory
 export HF_HOME="D:\AI_Models"
 ```
 
 ### GPU Memory Management
-```bash
+```python
 # For systems with multiple GPUs
 export CUDA_VISIBLE_DEVICES=0  # Use first GPU only
 ```

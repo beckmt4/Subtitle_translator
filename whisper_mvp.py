@@ -16,7 +16,26 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Iterator
 
 import ffmpeg
-from faster_whisper import WhisperModel
+# Import whisper libraries with fallback
+USE_FASTER_WHISPER = False
+WhisperModel = None
+whisper = None
+
+try:
+    from faster_whisper import WhisperModel
+    USE_FASTER_WHISPER = True
+    print("Using faster-whisper for GPU acceleration")
+except ImportError as e:
+    print(f"faster-whisper not available ({e}), falling back to openai-whisper")
+    try:
+        import whisper
+        USE_FASTER_WHISPER = False
+        print("Using openai-whisper")
+    except ImportError:
+        print("ERROR: Neither faster-whisper nor openai-whisper is available!")
+        import sys
+        sys.exit(1)
+
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
@@ -67,12 +86,18 @@ class WhisperMVP:
             console.print(f"[blue]Loading Whisper model: {model_name}[/blue]")
             console.print(f"[dim]Device: {device}, Compute type: {compute_type}[/dim]")
             
-            self.model = WhisperModel(
-                model_name, 
-                device=device, 
-                compute_type=compute_type,
-                download_root=None  # Use default cache location
-            )
+            if USE_FASTER_WHISPER:
+                self.model = WhisperModel(
+                    model_name, 
+                    device=device, 
+                    compute_type=compute_type,
+                    download_root=None  # Use default cache location
+                )
+            else:
+                # Fallback to OpenAI whisper
+                self.model = whisper.load_model(model_name)
+                device = "cuda" if device == "cuda" and whisper.torch.cuda.is_available() else "cpu"
+                self.model = self.model.to(device)
             
             self.model_name = model_name
             self.device = device
@@ -138,30 +163,54 @@ class WhisperMVP:
         try:
             console.print("[blue]Starting transcription...[/blue]")
             
-            # Set up transcription parameters
-            transcribe_params = {
-                'beam_size': beam_size,
-                'language': language,
-                'task': 'translate' if translate else 'transcribe'
-            }
-            
-            # Remove None values
-            transcribe_params = {k: v for k, v in transcribe_params.items() if v is not None}
-            
-            # Perform transcription
-            segments, info = self.model.transcribe(audio_path, **transcribe_params)
-            
-            # Convert segments to list
-            segment_list = []
-            for segment in segments:
-                segment_list.append({
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text.strip()
-                })
-            
-            console.print(f"[green]✓ Transcription completed ({len(segment_list)} segments)[/green]")
-            console.print(f"[dim]Detected language: {info.language} (confidence: {info.language_probability:.2f})[/dim]")
+            if USE_FASTER_WHISPER:
+                # Use faster-whisper
+                transcribe_params = {
+                    'beam_size': beam_size,
+                    'language': language,
+                    'task': 'translate' if translate else 'transcribe'
+                }
+                
+                # Remove None values
+                transcribe_params = {k: v for k, v in transcribe_params.items() if v is not None}
+                
+                # Perform transcription
+                segments, info = self.model.transcribe(audio_path, **transcribe_params)
+                
+                # Convert segments to list
+                segment_list = []
+                for segment in segments:
+                    segment_list.append({
+                        'start': segment.start,
+                        'end': segment.end,
+                        'text': segment.text.strip()
+                    })
+                
+                console.print(f"[green]✓ Transcription completed ({len(segment_list)} segments)[/green]")
+                console.print(f"[dim]Detected language: {info.language} (confidence: {info.language_probability:.2f})[/dim]")
+                
+            else:
+                # Use OpenAI whisper
+                transcribe_params = {}
+                if language:
+                    transcribe_params['language'] = language
+                if translate:
+                    transcribe_params['task'] = 'translate'
+                
+                result = self.model.transcribe(audio_path, **transcribe_params)
+                
+                # Convert to our format
+                segment_list = []
+                for segment in result['segments']:
+                    segment_list.append({
+                        'start': segment['start'],
+                        'end': segment['end'],
+                        'text': segment['text'].strip()
+                    })
+                
+                console.print(f"[green]✓ Transcription completed ({len(segment_list)} segments)[/green]")
+                if 'language' in result:
+                    console.print(f"[dim]Detected language: {result['language']}[/dim]")
             
             return segment_list
             

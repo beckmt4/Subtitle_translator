@@ -1,8 +1,20 @@
-# Core dependencies for GPU-accelerated subtitle generation
+# Clean installation method (recommended for Windows)
+# Install faster-whisper without dependencies to avoid PyAV issues:
+# pip install faster-whisper --no-deps
+# pip install ctranslate2 tokenizers transformers rich onnxruntime
+
+# Alternative: Traditional method (may have PyAV issues on Windows)
 faster-whisper>=1.0.0      # Main Whisper implementation with CUDA support
-ffmpeg-python>=0.2.0        # Audio extraction from video files
 rich>=13.0.0                # Beautiful terminal interface
 
-# Note: Also requires FFmpeg binary to be installed separately
-# Windows: choco install ffmpeg
-# Or download from: https://www.gyan.dev/ffmpeg/builds/
+# Core dependencies (install manually for clean setup)
+ctranslate2>=4.0.0         # High-performance inference engine  
+tokenizers>=0.20.0         # Text tokenization
+transformers>=4.50.0       # Hugging Face transformers
+onnxruntime>=1.20.0        # ONNX runtime for model inference
+
+# Note: FFmpeg binary must be installed separately
+# Windows PowerShell (recommended):
+# New-Item -ItemType Directory -Path "C:\ffmpeg" -Force
+# $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+# ... (see README.md for full installation script)
