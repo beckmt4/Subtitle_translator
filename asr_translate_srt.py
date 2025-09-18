@@ -196,6 +196,9 @@ def main():
     parser.add_argument("--patience", type=float, default=1.0)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Run pipeline logic without writing SRT.")
+    parser.add_argument("--remux", action="store_true", help="After writing SRT, remux into new media file with .subbed before extension.")
+    parser.add_argument("--remux-language", help="Subtitle track language code (default: en if translated else source language).")
+    parser.add_argument("--remux-overwrite", action="store_true", help="Overwrite existing .subbed file if present.")
 
     args = parser.parse_args()
     media_path = Path(args.input)
@@ -356,6 +359,26 @@ def main():
         t_write = progress.add_task("Writing SRT", total=100)
         write_srt(final_segments, out_path, args)
         progress.update(t_write, completed=100)
+
+        if args.remux and not args.dry_run:
+            remux_lang = args.remux_language or ("en" if (not args.no_mt or args.task == "translate") else (args.language or "und"))
+            remux_target = media_path.with_name(f"{media_path.stem}.subbed{media_path.suffix}")
+            ff_cmd = [
+                "ffmpeg",
+                "-y" if args.remux_overwrite else "-n",
+                "-i", str(media_path),
+                "-i", str(out_path),
+                "-map", "0", "-map", "1:0",
+                "-c", "copy",
+                "-c:s:1", "srt",
+                "-metadata:s:s:1", f"language={remux_lang}",
+                str(remux_target)
+            ]
+            r = subprocess.run(ff_cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                console.print(f"[yellow]Remux failed: {r.stderr.splitlines()[-1] if r.stderr else 'ffmpeg error'}[/yellow]")
+            else:
+                console.print(f"[green]✓ Remux complete: {remux_target}[/green]")
 
     console.print(f"[bold green]Done.[/bold green] Wrote: {out_path}")
 

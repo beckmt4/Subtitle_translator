@@ -246,7 +246,10 @@ class WhisperMVPClean:
                     device: str = "cuda", compute_type: str = "float16",
                     allow_fallback: bool = True,
                     device_order: Optional[list[str]] = None,
-                    show_progress: bool = True) -> bool:
+                    show_progress: bool = True,
+                    remux: bool = False,
+                    remux_language: str | None = None,
+                    remux_overwrite: bool = False) -> bool:
         """Process a single video/audio file.
 
         Parameters:
@@ -480,6 +483,18 @@ class WhisperMVPClean:
             
             # Display summary
             self.display_summary(segments, input_path.name, str(output_path))
+
+            # Optional remux step
+            if remux:
+                try:
+                    self.remux_subtitles(
+                        source_media=input_path,
+                        srt_file=output_path,
+                        language_code=remux_language or (language if language else ("en" if translate else "und")),
+                        overwrite=remux_overwrite
+                    )
+                except Exception as e:  # pragma: no cover
+                    console.print(f"[yellow]Remux failed: {e}[/yellow]")
             
             return True
             
@@ -513,6 +528,47 @@ class WhisperMVPClean:
         table.add_row("Average Segment Length", f"{total_duration / len(segments):.2f} seconds")
         
         console.print(table)
+
+    def remux_subtitles(self, source_media: Path | str, srt_file: Path | str, language_code: str = "en", overwrite: bool = False) -> Path:
+        """Remux generated SRT into a new media file with added .subbed before extension.
+
+        - Keeps original SRT file.
+        - Copies original audio/video streams (no re-encode).
+        - Adds SRT as a new subtitle stream with optional language metadata.
+        """
+        src = Path(source_media)
+        srt = Path(srt_file)
+        if not src.exists():
+            raise FileNotFoundError(f"Source media not found: {src}")
+        if not srt.exists():
+            raise FileNotFoundError(f"SRT file not found: {srt}")
+        remux_path = src.with_name(f"{src.stem}.subbed{src.suffix}")
+        if remux_path.exists() and not overwrite:
+            console.print(f"[yellow]Remux target exists: {remux_path} (use --remux-overwrite to replace)[/yellow]")
+            return remux_path
+        console.print(f"[blue]Remuxing with subtitles → {remux_path.name}[/blue]")
+        # ffmpeg command: copy streams, add subtitle
+        # Use -map 0 to include all original streams, then add SRT as new input
+        # Language metadata if provided
+        cmd = [
+            'ffmpeg', '-y' if overwrite else '-n',
+            '-i', str(src),
+            '-i', str(srt),
+            '-map', '0', '-map', '1:0',
+            '-c', 'copy',
+            '-c:s:1', 'srt',  # ensure SRT codec for new track (position after original subs)
+        ]
+        if language_code:
+            cmd += ['-metadata:s:s:1', f'language={language_code}']
+        cmd.append(str(remux_path))
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip().splitlines()[-1] if result.stderr else "ffmpeg remux failed")
+            console.print(f"[green]✓ Remux complete: {remux_path}[/green]")
+        except Exception as e:
+            raise RuntimeError(f"Remux failed: {e}")
+        return remux_path
 
 
 def main():
@@ -553,6 +609,12 @@ Examples:
                        help='Comma-separated list of devices to try in order (e.g., cuda,igpu,cpu). Overrides --device when provided. igpu currently maps to optimized CPU path.')
     parser.add_argument('--no-fallback', action='store_true',
                        help='Disable automatic CUDA→CPU fallback when GPU initialization fails')
+    parser.add_argument('--remux', action='store_true',
+                       help='After generating SRT, remux it into a new media file with .subbed before extension (keeps SRT)')
+    parser.add_argument('--remux-language',
+                       help='Language code metadata for remuxed subtitle track (default: source language or en if translated)')
+    parser.add_argument('--remux-overwrite', action='store_true',
+                       help='Overwrite existing .subbed file if present')
     
     args = parser.parse_args()
     
@@ -580,7 +642,10 @@ Examples:
         args.device,
         args.compute,
         allow_fallback = (not args.no_fallback),
-        device_order = device_order
+        device_order = device_order,
+        remux = args.remux,
+        remux_language = args.remux_language,
+        remux_overwrite = args.remux_overwrite
     )
     
     sys.exit(0 if success else 1)

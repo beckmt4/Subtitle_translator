@@ -232,7 +232,50 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 
 ---
 
-## 🎯 Model Selection Guide
+## � Remuxing Subtitles into a New Video File
+
+Both `whisper_clean.py` and `asr_translate_srt.py` now support embedding the generated SRT into a new media file without re-encoding (stream copy). The new file name appends `.subbed` before the original extension.
+
+### Basic Usage
+```powershell
+# Generate SRT and create remuxed MKV with embedded subs
+.\.venv\Scripts\python.exe whisper_clean.py movie.mkv --translate --lang ja --remux
+
+# Two-pass pipeline with remux
+.\.venv\Scripts\python.exe asr_translate_srt.py movie.mkv --language ja --remux
+```
+
+### Output Naming
+```
+movie.mkv        -> movie.srt         (subtitle file)
+				 -> movie.subbed.mkv  (remuxed container with embedded subtitle track)
+```
+
+### Flags
+| Flag | Script(s) | Description |
+|------|-----------|-------------|
+| `--remux` | both | Enable remuxing after SRT creation |
+| `--remux-language <code>` | both | Set language metadata for the new subtitle track (default: `en` if translated else source or `und`) |
+| `--remux-overwrite` | both | Overwrite existing `.subbed` file if present |
+
+### Notes
+- Streams are copied (`-c copy`), so this is fast and lossless.
+- Existing subtitle tracks are preserved; the new one is appended.
+- If the source already has a similar subtitle track, you can still differentiate externally (e.g., track ordering).
+- Use `--remux-language ja` to tag Japanese transcription or leave default when translating to English.
+
+### Troubleshooting Remux
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Remux failed: `ffmpeg error` | FFmpeg missing or unsupported container + SRT | Install FFmpeg / try MKV output |
+| No new file created | Existing `.subbed` file and no `--remux-overwrite` | Add `--remux-overwrite` |
+| Media player not showing subs | Player filtering tracks | Manually enable subtitle track in player |
+
+---
+
+---
+
+## �🎯 Model Selection Guide
 
 | Model | Size | VRAM | Speed | Quality | Best For |
 |-------|------|------|-------|---------|----------|
