@@ -215,12 +215,14 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 | `--min-gap` | Min gap between subtitles (s) | 0.09 |
 | `--vad-filter` | Enable whisper VAD | off |
 | `--dry-run` | Process but do not write SRT | off |
+| `--model-progress` | Show heuristic model download progress while loading | off |
 
 ### Performance Notes
 - NLLB 600M can run on mid-range GPUs; larger variants (1.3B / 3.3B) need substantial VRAM.
 - For constrained GPUs, lower batch size (`--batch-size 2` or `4`).
 - CPU MT is functional but slow for long content.
 - If MT fails mid-run, you’ll see a yellow fallback message and the pipeline will still complete with Whisper translations.
+ - First-time model load can appear static; use `--model-progress` to display approximate cache download percentage.
 
 ### When to Prefer `whisper_clean.py`
 | Scenario | Tool |

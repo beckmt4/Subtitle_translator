@@ -22,6 +22,8 @@ import math
 import textwrap
 import tempfile
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -199,6 +201,7 @@ def main():
     parser.add_argument("--remux", action="store_true", help="After writing SRT, remux into new media file with .subbed before extension.")
     parser.add_argument("--remux-language", help="Subtitle track language code (default: en if translated else source language).")
     parser.add_argument("--remux-overwrite", action="store_true", help="Overwrite existing .subbed file if present.")
+    parser.add_argument("--model-progress", action="store_true", help="Show approximate model download progress (heuristic).")
 
     args = parser.parse_args()
     media_path = Path(args.input)
@@ -224,7 +227,57 @@ def main():
     segments_struct: List[Dict] = []
 
     with progress:
-        t_model = progress.add_task("Loading ASR model", total=None)
+        t_model = progress.add_task("Loading ASR model", total=100 if args.model_progress else None)
+
+        stop_flag = threading.Event()
+        model_size_map = {
+            # Estimated compressed sizes (MB) of model directories for heuristic percentages
+            'tiny': 80,
+            'base': 150,
+            'small': 500,
+            'medium': 1500,
+            'large': 3100,
+            'large-v3': 3100,
+        }
+        est_total_mb = None
+        # Normalize key from asr_model param (may be path or HF id); only apply heuristic if simple token
+        if args.asr_model in model_size_map:
+            est_total_mb = model_size_map[args.asr_model]
+
+        def poll_cache_progress():
+            # Poll Hugging Face cache for size accumulation pre-init
+            # WhisperModel caches under ~/.cache/huggingface/hub/models--Systran--faster-whisper-* pattern
+            # We'll search for fastest matching folder containing the model token
+            token = args.asr_model
+            root = Path.home() / '.cache' / 'huggingface' / 'hub'
+            while not stop_flag.is_set():
+                try:
+                    candidates = []
+                    if root.exists():
+                        for p in root.iterdir():
+                            name = p.name.lower()
+                            if token.lower() in name and p.is_dir():
+                                candidates.append(p)
+                    total_bytes = 0
+                    for c in candidates:
+                        for fp in c.rglob('*'):
+                            if fp.is_file():
+                                # skip gigantic partial downloads maybe locked
+                                with contextlib.suppress(Exception):
+                                    total_bytes += fp.stat().st_size
+                    if est_total_mb and total_bytes > 0 and progress.tasks[t_model].total:
+                        mb = total_bytes / (1024*1024)
+                        pct = min(99.0, (mb / est_total_mb) * 100.0)
+                        progress.update(t_model, completed=pct)
+                except Exception:
+                    pass
+                time.sleep(0.6)
+
+        import contextlib
+        cache_thread = None
+        if args.model_progress:
+            cache_thread = threading.Thread(target=poll_cache_progress, daemon=True)
+            cache_thread.start()
         try:
             asr_model = WhisperModel(
                 args.asr_model,
@@ -232,6 +285,7 @@ def main():
                 compute_type=compute_type
             )
         except Exception as e:
+            # Fix: properly terminated f-string (previous version had newline inside causing syntax error)
             console.print(f"[yellow]ASR model load failed on {args.device}: {e}. Retrying on CPU int8_float16.[/yellow]")
             try:
                 asr_model = WhisperModel(
@@ -240,9 +294,17 @@ def main():
                     compute_type="int8_float16"
                 )
             except Exception as e2:
+                stop_flag.set()
+                if cache_thread:
+                    cache_thread.join(timeout=1)
                 console.print(f"[red]Failed to load model on CPU: {e2}[/red]")
                 sys.exit(1)
-        progress.update(t_model, completed=100)
+        finally:
+            stop_flag.set()
+            if cache_thread:
+                cache_thread.join(timeout=2)
+        if args.model_progress and progress.tasks[t_model].total:
+            progress.update(t_model, completed=100)
 
         t_audio = progress.add_task("Extracting audio", total=100)
         wav_path = run_ffmpeg_extract(media_path)
