@@ -11,8 +11,9 @@ import sys
 import subprocess
 import shlex
 import tempfile
+import wave
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
@@ -47,8 +48,11 @@ class WhisperMVPClean:
             return False
     
     def load_model(self, model_name: str, device: str = "cuda", 
-                   compute_type: str = "float16") -> bool:
-        """Load the Whisper model."""
+                   compute_type: str = "float16", quiet: bool = False) -> bool:
+        """Load the Whisper model.
+
+        quiet: suppress console output (used when progress bar active)
+        """
         if (self.model is not None and self.model_name == model_name 
             and self.device == device and self.compute_type == compute_type):
             return True
@@ -57,8 +61,9 @@ class WhisperMVPClean:
             # Import faster-whisper here to avoid import issues
             from faster_whisper import WhisperModel
             
-            console.print(f"[blue]Loading Whisper model: {model_name}[/blue]")
-            console.print(f"[dim]Device: {device}, Compute type: {compute_type}[/dim]")
+            if not quiet:
+                console.print(f"[blue]Loading Whisper model: {model_name}[/blue]")
+                console.print(f"[dim]Device: {device}, Compute type: {compute_type}[/dim]")
             
             self.model = WhisperModel(
                 model_name, 
@@ -70,13 +75,15 @@ class WhisperMVPClean:
             self.device = device
             self.compute_type = compute_type
             
-            console.print("[green]✓ Model loaded successfully[/green]")
+            if not quiet:
+                console.print("[green]✓ Model loaded successfully[/green]")
             return True
             
         except Exception as e:
-            console.print(f"[red]✗ Failed to load model: {e}[/red]")
-            if "CUDA" in str(e) or "cuda" in str(e):
-                console.print("[yellow]Tip: Try --device cpu if CUDA is not available or install CUDA Toolkit + cuDNN[/yellow]")
+            if not quiet:
+                console.print(f"[red]✗ Failed to load model: {e}[/red]")
+                if "CUDA" in str(e) or "cuda" in str(e):
+                    console.print("[yellow]Tip: Try --device cpu if CUDA is not available or install CUDA Toolkit + cuDNN[/yellow]")
             return False
 
     def _check_cuda_runtime(self) -> tuple[bool, list[str]]:
@@ -103,14 +110,18 @@ class WhisperMVPClean:
                 return True, []  # don't block
         return (len(missing) == 0, missing)
     
-    def extract_audio_ffmpeg(self, input_path: str) -> Optional[str]:
-        """Extract audio using FFmpeg directly - no PyAV needed."""
+    def extract_audio_ffmpeg(self, input_path: str, quiet: bool = False) -> Optional[str]:
+        """Extract audio using FFmpeg directly - no PyAV needed.
+
+        quiet: suppress console output
+        """
         try:
             # Create temporary WAV file
             temp_dir = tempfile.gettempdir()
             temp_audio = os.path.join(temp_dir, f"whisper_temp_{os.getpid()}.wav")
             
-            console.print(f"[blue]Extracting audio from {Path(input_path).name}...[/blue]")
+            if not quiet:
+                console.print(f"[blue]Extracting audio from {Path(input_path).name}...[/blue]")
             
             # FFmpeg command: extract 16kHz mono WAV
             cmd = [
@@ -131,32 +142,46 @@ class WhisperMVPClean:
             )
             
             if result.returncode != 0:
-                console.print(f"[red]✗ FFmpeg failed: {result.stderr}[/red]")
+                if not quiet:
+                    console.print(f"[red]✗ FFmpeg failed: {result.stderr}[/red]")
                 return None
             
             if not os.path.exists(temp_audio):
-                console.print("[red]✗ Audio extraction failed - output file not created[/red]")
+                if not quiet:
+                    console.print("[red]✗ Audio extraction failed - output file not created[/red]")
                 return None
             
-            console.print("[green]✓ Audio extracted successfully[/green]")
+            if not quiet:
+                console.print("[green]✓ Audio extracted successfully[/green]")
             return temp_audio
             
         except subprocess.TimeoutExpired:
-            console.print("[red]✗ FFmpeg timeout - video file too large or corrupted[/red]")
+            if not quiet:
+                console.print("[red]✗ FFmpeg timeout - video file too large or corrupted[/red]")
             return None
         except Exception as e:
-            console.print(f"[red]✗ Audio extraction failed: {e}[/red]")
+            if not quiet:
+                console.print(f"[red]✗ Audio extraction failed: {e}[/red]")
             return None
     
     def transcribe_audio(self, audio_path: str, language: Optional[str] = None,
-                        translate: bool = False, beam_size: int = 5) -> List[dict]:
-        """Transcribe audio file using faster-whisper."""
+                        translate: bool = False, beam_size: int = 5,
+                        quiet: bool = False,
+                        progress: Optional[Progress] = None,
+                        progress_task: Optional[int] = None,
+                        total_duration: Optional[float] = None) -> List[dict]:
+        """Transcribe audio file using faster-whisper.
+
+        If progress & task provided, update progress using segment end time relative to total_duration.
+        """
         if self.model is None:
-            console.print("[red]✗ Model not loaded[/red]")
+            if not quiet:
+                console.print("[red]✗ Model not loaded[/red]")
             return []
         
         try:
-            console.print("[blue]Starting transcription...[/blue]")
+            if not quiet:
+                console.print("[blue]Starting transcription...[/blue]")
             
             # Set up transcription parameters
             transcribe_params = {
@@ -168,24 +193,27 @@ class WhisperMVPClean:
                 transcribe_params['language'] = language
             
             # Perform transcription
-            segments, info = self.model.transcribe(audio_path, **transcribe_params)
-            
-            # Convert segments to list
-            segment_list = []
-            for segment in segments:
+            seg_iter, info = self.model.transcribe(audio_path, **transcribe_params)
+            segment_list: List[dict] = []
+            for seg in seg_iter:
                 segment_list.append({
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text.strip()
+                    'start': seg.start,
+                    'end': seg.end,
+                    'text': seg.text.strip()
                 })
-            
-            console.print(f"[green]✓ Transcription completed ({len(segment_list)} segments)[/green]")
-            console.print(f"[dim]Detected language: {info.language} (confidence: {info.language_probability:.2f})[/dim]")
-            
+                if progress and progress_task is not None and total_duration:
+                    completed = min(seg.end, total_duration)
+                    progress.update(cast("int", progress_task), completed=completed)  # type: ignore[arg-type]
+            if progress and progress_task is not None and total_duration:
+                progress.update(cast("int", progress_task), completed=total_duration)  # type: ignore[arg-type]
+            if not quiet:
+                console.print(f"[green]✓ Transcription completed ({len(segment_list)} segments)[/green]")
+                console.print(f"[dim]Detected language: {info.language} (confidence: {info.language_probability:.2f})[/dim]")
             return segment_list
             
         except Exception as e:
-            console.print(f"[red]✗ Transcription failed: {e}[/red]")
+            if not quiet:
+                console.print(f"[red]✗ Transcription failed: {e}[/red]")
             return []
     
     def format_timestamp(self, seconds: float) -> str:
@@ -217,7 +245,8 @@ class WhisperMVPClean:
                     translate: bool = False, beam_size: int = 5,
                     device: str = "cuda", compute_type: str = "float16",
                     allow_fallback: bool = True,
-                    device_order: Optional[list[str]] = None) -> bool:
+                    device_order: Optional[list[str]] = None,
+                    show_progress: bool = True) -> bool:
         """Process a single video/audio file.
 
         Parameters:
@@ -265,7 +294,8 @@ class WhisperMVPClean:
                     device=mapped_device,
                     compute_type=ct,
                     allow_fallback=allow_fallback if last else False,
-                    device_order=None  # prevent recursion loops
+                    device_order=None,  # prevent recursion loops
+                    show_progress=show_progress
                 )
                 if success:
                     if d_try == 'igpu':
@@ -302,8 +332,25 @@ class WhisperMVPClean:
             compute_type = 'int8_float16'
             console.print("[yellow]Float16 not efficient on CPU. Using int8_float16 instead.[/yellow]")
 
+        # Setup progress UI
+        progress: Optional[Progress] = None
+        if show_progress:
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(),
+                TextColumn("{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                console=console,
+                transient=False
+            )
+            progress.start()
+        t_load = t_extract = t_transcribe = t_srt = t_write = None
+        if progress:
+            t_load = progress.add_task("Load Model", total=1)
+
         # Load model (with potential fallback logic inside this scope)
-        if not self.load_model(model_name, device, compute_type):
+        if not self.load_model(model_name, device, compute_type, quiet=bool(progress)):
             # If initial load failed on CUDA and fallback allowed, attempt CPU
             if device == 'cuda' and allow_fallback:
                 console.print("[yellow]Attempting automatic fallback to CPU...[/yellow]")
@@ -311,17 +358,34 @@ class WhisperMVPClean:
                 self.model = None
                 # Switch compute type if needed
                 fb_compute = 'int8_float16' if orig_compute == 'float16' else orig_compute
-                if not self.load_model(model_name, 'cpu', fb_compute):
+                if not self.load_model(model_name, 'cpu', fb_compute, quiet=bool(progress)):
                     return False
                 device = 'cpu'
                 compute_type = fb_compute
             else:
                 return False
+        if progress and t_load is not None:
+            progress.update(t_load, advance=1)
         
         # Extract audio with FFmpeg
-        temp_audio_path = self.extract_audio_ffmpeg(str(input_path))
+        if progress:
+            t_extract = progress.add_task("Extract Audio", total=1)
+        temp_audio_path = self.extract_audio_ffmpeg(str(input_path), quiet=bool(progress))
+        if progress and t_extract is not None:
+            progress.update(t_extract, advance=1)
         if temp_audio_path is None:
             return False
+
+        # Determine audio duration for transcription progress
+        audio_duration: Optional[float] = None
+        try:
+            with wave.open(temp_audio_path, 'rb') as wf:  # type: ignore[arg-type]
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    audio_duration = frames / float(rate)
+        except Exception:
+            audio_duration = None
         
         # Proactive CUDA runtime verification (avoid crash inside transcribe)
         if self.device == 'cuda':
@@ -364,7 +428,18 @@ class WhisperMVPClean:
 
         try:
             # Transcribe audio
-            segments = self.transcribe_audio(temp_audio_path, language, translate, beam_size)
+            if progress:
+                t_transcribe = progress.add_task("Transcribe", total=audio_duration if audio_duration else 1)
+            segments = self.transcribe_audio(
+                temp_audio_path,
+                language,
+                translate,
+                beam_size,
+                quiet=bool(progress),
+                progress=progress,
+                progress_task=t_transcribe,
+                total_duration=audio_duration
+            )
 
             # If transcription failed due to CUDA/cuDNN error and fallback allowed, retry on CPU
             if not segments and orig_device == 'cuda' and self.device == 'cuda' and allow_fallback:
@@ -388,10 +463,18 @@ class WhisperMVPClean:
                 return False
             
             # Generate SRT content
+            if progress:
+                t_srt = progress.add_task("Generate SRT", total=1)
             srt_content = self.generate_srt(segments)
+            if progress and t_srt is not None:
+                progress.update(t_srt, advance=1)
             
             # Write SRT file
+            if progress:
+                t_write = progress.add_task("Write File", total=1)
             output_path.write_text(srt_content, encoding='utf-8')
+            if progress and t_write is not None:
+                progress.update(t_write, advance=1)
             
             console.print(f"[green]✓ Subtitles saved to: {output_path}[/green]")
             
@@ -407,6 +490,8 @@ class WhisperMVPClean:
                     os.unlink(temp_audio_path)
             except Exception:
                 pass
+            if progress:
+                progress.stop()
         # Should not reach here; explicit False for static analysis
         return False
     
