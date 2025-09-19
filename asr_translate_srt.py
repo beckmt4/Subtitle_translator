@@ -357,7 +357,36 @@ def main():
         wav_path = run_ffmpeg_extract(media_path)
         asr_progress.update(t_audio, completed=100)
 
-        t_asr = asr_progress.add_task("Transcribing", total=None)
+        # Create a pulsing progress bar for transcription since we can't get incremental updates
+        t_asr = asr_progress.add_task("Transcribing (GPU working - please wait...)", total=100)
+        
+        # Start a background thread to update the progress bar to show activity
+        transcribe_done = threading.Event()
+        
+        def update_transcribe_progress():
+            # Pulsing progress bar between 0-90% while transcription is running
+            progress = 0
+            pulse_step = 2
+            direction = 1  # 1 for increasing, -1 for decreasing
+            
+            while not transcribe_done.is_set():
+                # Update progress in a pulsing pattern
+                progress += pulse_step * direction
+                
+                # Reverse direction at bounds (0% and 90%)
+                if progress >= 90:
+                    direction = -1
+                elif progress <= 0:
+                    direction = 1
+                    
+                # Update the progress bar
+                asr_progress.update(t_asr, completed=progress)
+                time.sleep(0.1)
+        
+        # Start the progress update thread
+        progress_thread = threading.Thread(target=update_transcribe_progress, daemon=True)
+        progress_thread.start()
+        
         try:
             gen = asr_model.transcribe(
                 str(wav_path),
@@ -370,7 +399,21 @@ def main():
                 condition_on_previous_text=True
             )
             raw_segments, info = gen
+            
+            # Signal the progress thread to stop
+            transcribe_done.set()
+            progress_thread.join(timeout=1)
+            
+            # Set to 100% when complete
+            asr_progress.update(t_asr, completed=100, description="Transcribing [green](complete)")
+            
         except Exception as e:
+            # Signal the progress thread to stop
+            transcribe_done.set()
+            progress_thread.join(timeout=1)
+            
+            # Show error
+            asr_progress.update(t_asr, completed=0, description="Transcribing [red](failed)")
             console.print(f"[red]Transcription failed: {e}[/red]")
             sys.exit(1)
 
@@ -380,7 +423,6 @@ def main():
                 "end": s.end,
                 "src": s.text.strip()
             })
-        asr_progress.update(t_asr, completed=100)
 
         # Start the second phase: MT (Machine Translation)
         console.print("\n[bold green]Phase 2: Machine Translation[/bold green]")
@@ -397,6 +439,7 @@ def main():
                     print_diagnostics(asr_model, tok, mt, args)
 
                 if tok and mt:
+                    # For external MT, we can show per-segment progress since we process each one
                     t_translate = mt_progress.add_task("Translating segments", total=len(segments_struct))
                     batch_texts = [s["src"] for s in segments_struct]
                     try:
@@ -415,8 +458,94 @@ def main():
                         console.print(f"[yellow]External MT failed: {e}. Falling back to Whisper internal translation pass.[/yellow]")
                         # second pass: internal translation
                         translations = []
-                        t_second = mt_progress.add_task("Whisper translation pass", total=None)
-                        # re-run with task=translate, using original audio
+                        
+                        # Create pulsing progress bar for Whisper translation
+                        t_second = mt_progress.add_task("Whisper translation pass (processing...)", total=100)
+                        
+                        # Start a background thread to update the progress bar to show activity
+                        translate_done = threading.Event()
+                        
+                        def update_translate_progress():
+                            progress = 0
+                            pulse_step = 3
+                            direction = 1
+                            
+                            while not translate_done.is_set():
+                                progress += pulse_step * direction
+                                if progress >= 95:
+                                    direction = -1
+                                elif progress <= 0:
+                                    direction = 1
+                                mt_progress.update(t_second, completed=progress)
+                                time.sleep(0.15)
+                        
+                        # Start the progress update thread
+                        translate_thread = threading.Thread(target=update_translate_progress, daemon=True)
+                        translate_thread.start()
+                        
+                        try:
+                            # re-run with task=translate, using original audio
+                            gen2 = asr_model.transcribe(
+                                str(wav_path),
+                                language=args.language,
+                                task="translate",
+                                beam_size=args.beam_size,
+                                temperature=args.temperature,
+                                patience=args.patience,
+                                vad_filter=args.vad_filter,
+                                condition_on_previous_text=True
+                            )
+                            seg2, _ = gen2
+                            
+                            # Signal the progress thread to stop
+                            translate_done.set()
+                            translate_thread.join(timeout=1)
+                            
+                            mapped = list(seg2)
+                            # naive alignment by order
+                            for i, s2 in enumerate(mapped):
+                                if i < len(segments_struct):
+                                    segments_struct[i]["text"] = s2.text.strip()
+                                    
+                            # Update progress bar to show completion
+                            mt_progress.update(t_second, completed=100, description="Whisper translation [green](complete)")
+                        
+                        except Exception as e:
+                            # Signal the progress thread to stop
+                            translate_done.set()
+                            translate_thread.join(timeout=1)
+                            
+                            # Show error in progress bar
+                            mt_progress.update(t_second, completed=0, description="Whisper translation [red](failed)")
+                            console.print(f"[red]Whisper translation failed: {e}[/red]")
+                            sys.exit(1)
+                else:
+                    # fallback path: internal translation
+                    # Create pulsing progress bar for Whisper translation
+                    t_fallback = mt_progress.add_task("Whisper translation pass (processing...)", total=100)
+                    
+                    # Start a background thread to update the progress bar to show activity
+                    translate_done = threading.Event()
+                    
+                    def update_translate_progress():
+                        progress = 0
+                        pulse_step = 3
+                        direction = 1
+                        
+                        while not translate_done.is_set():
+                            progress += pulse_step * direction
+                            if progress >= 95:
+                                direction = -1
+                            elif progress <= 0:
+                                direction = 1
+                            mt_progress.update(t_fallback, completed=progress)
+                            time.sleep(0.15)
+                    
+                    # Start the progress update thread
+                    translate_thread = threading.Thread(target=update_translate_progress, daemon=True)
+                    translate_thread.start()
+                    
+                    try:
                         gen2 = asr_model.transcribe(
                             str(wav_path),
                             language=args.language,
@@ -428,31 +557,28 @@ def main():
                             condition_on_previous_text=True
                         )
                         seg2, _ = gen2
+                        
+                        # Signal the progress thread to stop
+                        translate_done.set()
+                        translate_thread.join(timeout=1)
+                        
                         mapped = list(seg2)
-                        # naive alignment by order
                         for i, s2 in enumerate(mapped):
                             if i < len(segments_struct):
                                 segments_struct[i]["text"] = s2.text.strip()
-                        mt_progress.update(t_second, completed=100)
-                else:
-                    # fallback path: internal translation
-                    t_fallback = mt_progress.add_task("Whisper translation pass", total=None)
-                    gen2 = asr_model.transcribe(
-                        str(wav_path),
-                        language=args.language,
-                        task="translate",
-                        beam_size=args.beam_size,
-                        temperature=args.temperature,
-                        patience=args.patience,
-                        vad_filter=args.vad_filter,
-                        condition_on_previous_text=True
-                    )
-                    seg2, _ = gen2
-                    mapped = list(seg2)
-                    for i, s2 in enumerate(mapped):
-                        if i < len(segments_struct):
-                            segments_struct[i]["text"] = s2.text.strip()
-                    mt_progress.update(t_fallback, completed=100)
+                                
+                        # Show completion
+                        mt_progress.update(t_fallback, completed=100, description="Whisper translation [green](complete)")
+                    
+                    except Exception as e:
+                        # Signal the progress thread to stop
+                        translate_done.set()
+                        translate_thread.join(timeout=1)
+                        
+                        # Show error
+                        mt_progress.update(t_fallback, completed=0, description="Whisper translation [red](failed)")
+                        console.print(f"[red]Whisper translation failed: {e}[/red]")
+                        sys.exit(1)
             else:
                 # We already requested translate in first pass (args.task == translate or user forced no_mt)
                 t_skip = mt_progress.add_task("Skipping external MT (using direct Whisper translation)", total=100)
