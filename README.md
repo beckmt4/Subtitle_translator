@@ -162,6 +162,11 @@ If you need higher quality English subtitles from (e.g.) Japanese audio, use the
 3. Shaping: Applies constraints: max chars per line, max lines, max CPS (characters per second), min duration, min gap between subtitles
 4. Fallback: If MT model or dependencies unavailable, it automatically performs a second Whisper translation pass
 
+⚠️ **IMPORTANT**: When using external MT models:
+- DO NOT include `--task translate` in your command
+- This parameter causes the script to skip external MT and use Whisper's built-in translation instead
+- Only use `--task translate` when you've also specified `--no-mt` and want Whisper's built-in translation
+
 ### Why Two-Pass?
 Whisper’s built-in translate mode is convenient but sometimes:
 
@@ -194,8 +199,15 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 # For RTX A3000 (12GB VRAM):
 .\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --asr-model large-v3 --mt-model facebook/nllb-200-1.3B --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18 --batch-size 8 --beam-size 8 --mt-beams 4 --compute float16 --device cuda
 
-# For RTX 4090 (24GB VRAM):
-.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --asr-model large-v3 --mt-model facebook/nllb-200-3.3B --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18 --batch-size 16 --beam-size 10 --mt-beams 6 --compute float16 --device cuda
+# For RTX 4090 (24GB VRAM) with NLLB 3.3B (recommended):
+.\.venv\Scripts\python.exe asr_translate_srt.py "movie.mkv" --language ja --asr-model large-v3 --mt-model facebook/nllb-200-3.3B --max-line-chars 32 --max-lines 1 --max-cps 13 --min-gap 0.18 --batch-size 16 --beam-size 10 --mt-beams 6 --compute float16 --device cuda --verbose
+
+# NOTE: The unbabel/tower-plus-9b model is NOT compatible with this script as it uses Gemma2Config
+# which isn't supported by AutoModelForSeq2SeqLM. Stick with NLLB models for best results.
+
+# IMPORTANT NOTE: Do NOT use --task translate when using external MT models (NLLB)
+# Using --task translate will skip external MT and use Whisper's internal translation instead.
+# Only use --task translate when using --no-mt to force Whisper's internal translation.
 ```
 
 ### Key Options (Two-Pass Script)
@@ -205,7 +217,7 @@ They are already listed in `requirements.txt`, but you can skip installing them 
 | `--asr-model` | Whisper model name/path | `medium` |
 | `--mt-model` | Hugging Face MT model | `facebook/nllb-200-distilled-600M` |
 | `--no-mt` | Disable external MT (use Whisper translation) | off |
-| `--task` | If `translate` & `--no-mt`, first pass translates directly | `transcribe` |
+| `--task` | CAUTION: Setting to `translate` will SKIP external MT and use Whisper's built-in translation | `transcribe` |
 | `--beam-size` | Whisper beam size | 5 |
 | `--mt-beams` | MT beam size | 4 |
 | `--batch-size` | MT batch size | 8 |

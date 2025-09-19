@@ -40,27 +40,80 @@ except ImportError:
     sys.exit(1)
 
 # Optional torch + transformers load (lazy)
-def load_mt_model(model_name: str, device: str):
+def load_mt_model(model_name: str, device: str, src_lang: Optional[str] = None, tgt_lang: Optional[str] = None, arch_pref: str = "auto"):
     try:
         import torch
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM, AutoConfig
     except Exception as e:
         console.print(f"[yellow]MT dependencies missing (torch/transformers). Fallback to Whisper internal translation. ({e})[/yellow]")
-        return None, None
+        return None, None, None
+
+    # Build tokenizer kwargs for models that support language codes (e.g., NLLB)
+    def _bcp47(code: Optional[str]) -> Optional[str]:
+        if not code:
+            return None
+        code = code.lower()
+        # Minimal mapping; expand as needed
+        mapping = {
+            "ja": "jpn_Jpan",
+            "en": "eng_Latn",
+            "zh": "zho_Hans",
+            "ko": "kor_Hang",
+            "fr": "fra_Latn",
+            "de": "deu_Latn",
+            "es": "spa_Latn",
+        }
+        return mapping.get(code, None)
 
     try:
-        tok = AutoTokenizer.from_pretrained(model_name)
-        mt = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        # Detect architecture (seq2seq vs decoder-only) if possible
+        use_decoder_only = False
+        try:
+            cfg = AutoConfig.from_pretrained(model_name)
+            arch_name = None
+            if hasattr(cfg, "architectures") and cfg.architectures:
+                arch_name = ",".join(cfg.architectures)
+            if arch_pref == "decoder":
+                use_decoder_only = True
+            elif arch_pref == "seq2seq":
+                use_decoder_only = False
+            else:
+                use_decoder_only = bool(arch_name and ("CausalLM" in arch_name or "ForCausalLM" in arch_name))
+        except Exception:
+            use_decoder_only = (arch_pref == "decoder")
+
+        tok_kwargs = {}
+        if "nllb" in model_name.lower():
+            src = _bcp47(src_lang)
+            tgt = _bcp47(tgt_lang)
+            if src:
+                tok_kwargs["src_lang"] = src
+            if tgt:
+                tok_kwargs["tgt_lang"] = tgt
+        tok = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
+        if use_decoder_only:
+            with contextlib.suppress(Exception):
+                tok.padding_side = "left"
+            mt = AutoModelForCausalLM.from_pretrained(model_name)
+            mt_arch = "decoder"
+        else:
+            mt = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            mt_arch = "seq2seq"
         if device == "cuda" and torch.cuda.is_available():
-            mt = mt.half().to("cuda")
+            try:
+                mt = mt.half().to("cuda")
+            except Exception:
+                # Some models may not support half precision; fall back to float32 on CUDA
+                mt = mt.to("cuda")
         else:
             mt = mt.to("cpu")
-        return tok, mt
+        mt.eval()
+        return tok, mt, mt_arch
     except Exception as e:
         console.print(f"[yellow]Failed to load MT model {model_name}: {e}. Falling back to Whisper translation.[/yellow]")
-        return None, None
+        return None, None, None
 
-def print_diagnostics(asr_model_obj, mt_tok, mt_model, args):
+def print_diagnostics(asr_model_obj, mt_tok, mt_model, args, mt_arch: Optional[str] = None):
     """Print runtime diagnostics about devices, precision, and availability."""
     try:
         import torch
@@ -81,12 +134,35 @@ def print_diagnostics(asr_model_obj, mt_tok, mt_model, args):
     if mt_model is not None:
         try:
             import torch
-            console.print(f"MT Model: {args.mt_model} (device={mt_model.device}, dtype={next(mt_model.parameters()).dtype})")
+            console.print(f"MT Model: {args.mt_model} (device={mt_model.device}, dtype={next(mt_model.parameters()).dtype}, arch={mt_arch or 'unknown'})")
         except Exception:
-            console.print(f"MT Model: {args.mt_model} (device=unknown)")
+            console.print(f"MT Model: {args.mt_model} (device=unknown, arch={mt_arch or 'unknown'})")
     else:
         console.print("MT Model: (none / using Whisper translation)")
     console.rule()
+
+def _lang_name(code: Optional[str]) -> str:
+    mapping = {"ja": "Japanese", "en": "English", "zh": "Chinese", "ko": "Korean", "fr": "French", "de": "German", "es": "Spanish"}
+    return mapping.get((code or "").lower(), code or "")
+
+def build_decoder_prompt(text: str, src_lang: str, tgt_lang: str, tok) -> str:
+    """Prompt for decoder-only MT models. Uses chat template when available."""
+    src_name = _lang_name(src_lang)
+    tgt_name = _lang_name(tgt_lang)
+    try:
+        if hasattr(tok, "apply_chat_template") and getattr(tok, "chat_template", None):
+            messages = [
+                {"role": "system", "content": f"You are a professional translation engine. Translate the user message from {src_name} to {tgt_name}. Output only the translation with no explanations."},
+                {"role": "user", "content": text},
+            ]
+            return tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    except Exception:
+        pass
+    return (
+        f"Translate the following text from {src_name} to {tgt_name}.\n"
+        f"Text: {text}\n"
+        f"Translation:"
+    )
 
 def run_ffmpeg_extract(input_path: Path, target_sr=16000) -> Path:
     wav_path = input_path.with_suffix(".asr.wav")
@@ -143,21 +219,173 @@ def batch_translate(
     mt,
     batch_size: int,
     max_new_tokens: int,
-    beam_size: int
+    beam_size: int,
+    verbose: bool = False,
+    arch: str = "seq2seq",
+    src_lang: Optional[str] = None,
+    tgt_lang: Optional[str] = None,
 ) -> List[str]:
     import torch
     outputs: List[str] = []
+    tried_cpu_fallback = False
+    
+    # Handle empty input case
+    if not lines:
+        return outputs
+        
+    # Auto-adjust batch size if needed based on input
+    if batch_size > len(lines):
+        if verbose:
+            console.print(f"[yellow]Adjusting batch size from {batch_size} to {len(lines)} (total segments)[/yellow]")
+        batch_size = max(1, len(lines))
+    
+    # Progress tracking for verbose mode
+    total_chunks = (len(lines) + batch_size - 1) // batch_size
+    
     for i in range(0, len(lines), batch_size):
         chunk = lines[i:i+batch_size]
-        inputs = tok(chunk, return_tensors="pt", padding=True, truncation=True).to(mt.device)
-        gen = mt.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            num_beams=beam_size
-        )
-        decoded = tok.batch_decode(gen, skip_special_tokens=True)
-        outputs.extend(decoded)
-        torch.cuda.empty_cache()
+        if verbose:
+            console.print(f"[cyan]Translating batch {(i//batch_size)+1}/{total_chunks} ({len(chunk)} segments)[/cyan]")
+        
+        forced_bos_token_id = None
+        try:
+            if arch == "decoder":
+                prompts = [build_decoder_prompt(txt, src_lang or "ja", tgt_lang or "en", tok) for txt in chunk]
+                inputs = tok(prompts, return_tensors="pt", padding=True, truncation=True).to(mt.device)
+                with torch.inference_mode():
+                    gen = mt.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        num_beams=max(1, beam_size or 1),
+                        eos_token_id=getattr(tok, "eos_token_id", None),
+                        pad_token_id=getattr(tok, "pad_token_id", None),
+                    )
+                sequences = gen.sequences if hasattr(gen, "sequences") else gen
+                input_len = inputs.input_ids.shape[1]
+                cont = sequences[:, input_len:]
+                decoded = tok.batch_decode(cont, skip_special_tokens=True)
+                outputs.extend([d.strip() for d in decoded])
+                torch.cuda.empty_cache()
+            else:
+                inputs = tok(chunk, return_tensors="pt", padding=True, truncation=True).to(mt.device)
+                # Determine target language BOS if available (NLLB/M2M100/etc.)
+                if hasattr(tok, "lang_code_to_id"):
+                    forced_bos_token_id = tok.lang_code_to_id.get("eng_Latn", None)
+                if forced_bos_token_id is None and hasattr(tok, "get_lang_id"):
+                    try:
+                        forced_bos_token_id = tok.get_lang_id("en")
+                    except Exception:
+                        forced_bos_token_id = None
+                with torch.inference_mode():
+                    gen = mt.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        num_beams=beam_size,
+                        forced_bos_token_id=forced_bos_token_id
+                    )
+                decoded = tok.batch_decode(gen, skip_special_tokens=True)
+                outputs.extend(decoded)
+                torch.cuda.empty_cache()
+            
+        except torch.cuda.OutOfMemoryError:
+            # Try to recover by reducing batch size
+            if len(chunk) > 1:
+                if verbose:
+                    console.print(f"[yellow]GPU OOM with batch size {len(chunk)}, retrying with smaller batches[/yellow]")
+                # Process one by one
+                for text in chunk:
+                    try:
+                        if arch == "decoder":
+                            prompt = build_decoder_prompt(text, src_lang or "ja", tgt_lang or "en", tok)
+                            single_input = tok([prompt], return_tensors="pt").to(mt.device)
+                            with torch.inference_mode():
+                                single_gen = mt.generate(
+                                    **single_input,
+                                    max_new_tokens=max_new_tokens,
+                                    do_sample=False,
+                                    num_beams=1,
+                                    eos_token_id=getattr(tok, "eos_token_id", None),
+                                    pad_token_id=getattr(tok, "pad_token_id", None),
+                                )
+                            sequences = single_gen.sequences if hasattr(single_gen, "sequences") else single_gen
+                            input_len = single_input.input_ids.shape[1]
+                            cont = sequences[:, input_len:]
+                            single_decoded = tok.batch_decode(cont, skip_special_tokens=True)
+                        else:
+                            single_input = tok([text], return_tensors="pt").to(mt.device)
+                            with torch.inference_mode():
+                                single_gen = mt.generate(
+                                    **single_input,
+                                    max_new_tokens=max_new_tokens,
+                                    num_beams=max(1, beam_size-2),  # Reduce beam size to conserve memory
+                                    forced_bos_token_id=forced_bos_token_id
+                                )
+                            single_decoded = tok.batch_decode(single_gen, skip_special_tokens=True)
+                        outputs.extend([t.strip() for t in single_decoded])
+                        torch.cuda.empty_cache()
+                    except Exception as e:
+                        # Last resort - return empty translation for this segment
+                        console.print(f"[red]Failed to translate segment: {e}[/red]")
+                        outputs.append("") 
+                        torch.cuda.empty_cache()
+            else:
+                # Even a single segment is too large - add placeholder
+                console.print(f"[red]GPU OOM with single segment, skipping[/red]")
+                outputs.append("")
+                torch.cuda.empty_cache()
+        except Exception as e:
+            console.print(f"[red]Error in translation batch: {e}[/red]")
+            # Attempt a one-time CPU fallback for MT if running on CUDA
+            try:
+                import torch as _torch
+                if mt.device.type == "cuda" and not tried_cpu_fallback:
+                    console.print("[yellow]Falling back to CPU for MT due to error. This will be slower.[/yellow]")
+                    mt.to("cpu")
+                    tried_cpu_fallback = True
+                    # Retry current chunk on CPU one-by-one to avoid memory spikes
+                    for text in chunk:
+                        try:
+                            if arch == "decoder":
+                                prompt = build_decoder_prompt(text, src_lang or "ja", tgt_lang or "en", tok)
+                                single_input = tok([prompt], return_tensors="pt")
+                                with _torch.inference_mode():
+                                    single_gen = mt.generate(
+                                        **single_input,
+                                        max_new_tokens=max_new_tokens,
+                                        do_sample=False,
+                                        num_beams=1,
+                                        eos_token_id=getattr(tok, "eos_token_id", None),
+                                        pad_token_id=getattr(tok, "pad_token_id", None),
+                                    )
+                                sequences = single_gen.sequences if hasattr(single_gen, "sequences") else single_gen
+                                input_len = single_input.input_ids.shape[1]
+                                cont = sequences[:, input_len:]
+                                single_decoded = tok.batch_decode(cont, skip_special_tokens=True)
+                            else:
+                                single_input = tok([text], return_tensors="pt")
+                                with _torch.inference_mode():
+                                    single_gen = mt.generate(
+                                        **single_input,
+                                        max_new_tokens=max_new_tokens,
+                                        num_beams=max(1, beam_size-2),
+                                        forced_bos_token_id=forced_bos_token_id
+                                    )
+                                single_decoded = tok.batch_decode(single_gen, skip_special_tokens=True)
+                            outputs.extend(single_decoded)
+                        except Exception as e2:
+                            console.print(f"[red]CPU fallback also failed for a segment: {e2}[/red]")
+                            outputs.append("")
+                    continue
+            except Exception:
+                pass
+            # If we can't recover, add empty translations to maintain segment count
+            outputs.extend([""] * len(chunk))
+            try:
+                import torch as _torch
+                _torch.cuda.empty_cache()
+            except Exception:
+                pass
     return outputs
 
 def write_srt(
@@ -202,6 +430,8 @@ def main():
     parser.add_argument("--asr-model", default="medium", help="Whisper model size or path.")
     parser.add_argument("--mt-model", default="facebook/nllb-200-distilled-600M",
                         help="MT model name (HuggingFace). Use larger (e.g. facebook/nllb-200-3.3B) if VRAM allows.")
+    parser.add_argument("--mt-arch", choices=["auto", "seq2seq", "decoder"], default="auto",
+                        help="Force MT architecture selection if auto-detection fails.")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"],
                         help="Primary device for ASR (and MT if torch available).")
     parser.add_argument("--beam-size", type=int, default=5, help="Beam size for Whisper decoding.")
@@ -209,8 +439,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8, help="MT batch size.")
     parser.add_argument("--max-new-tokens", type=int, default=200, help="MT generation max_new_tokens.")
     parser.add_argument("--mt-beams", type=int, default=4, help="MT beam size.")
-    parser.add_argument("--compute-type", default=None,
+    # Accept both --compute-type and --compute for compatibility with docs
+    parser.add_argument("--compute-type", dest="compute_type", default=None,
                         help="Override compute_type (default: float16 on CUDA, int8_float16 CPU).")
+    parser.add_argument("--compute", dest="compute_type", default=None,
+                        help="Alias for --compute-type.")
     parser.add_argument("--task", default="transcribe", choices=["transcribe", "translate"],
                         help="Whisper task if MT model not used.")
     parser.add_argument("--no-mt", action="store_true",
@@ -433,10 +666,12 @@ def main():
         with mt_progress:
             if use_external_mt:
                 t_mt = mt_progress.add_task("Loading MT model", total=None)
-                tok, mt = load_mt_model(args.mt_model, args.device)
+                # For NLLB we prefer explicit src/tgt where possible
+                tgt_lang = "en"
+                tok, mt, mt_arch = load_mt_model(args.mt_model, args.device, src_lang=args.language, tgt_lang=tgt_lang, arch_pref=args.mt_arch)
                 mt_progress.update(t_mt, completed=100)
                 if args.diag:
-                    print_diagnostics(asr_model, tok, mt, args)
+                    print_diagnostics(asr_model, tok, mt, args, mt_arch=mt_arch)
 
                 if tok and mt:
                     # For external MT, we can show per-segment progress since we process each one
@@ -449,7 +684,11 @@ def main():
                             mt,
                             batch_size=args.batch_size,
                             max_new_tokens=args.max_new_tokens,
-                            beam_size=args.mt_beams
+                            beam_size=args.mt_beams,
+                            verbose=args.verbose,
+                            arch=(mt_arch or "seq2seq"),
+                            src_lang=args.language,
+                            tgt_lang=tgt_lang
                         )
                         for i, tr in enumerate(translated):
                             segments_struct[i]["text"] = tr.strip()
