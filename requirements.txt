@@ -1,9 +1,9 @@
-# Clean installation method (recommended for Windows)
-# Install faster-whisper without dependencies to avoid PyAV issues:
+# Clean installation method (recommended for Windows - NO PyAV)
+# Install faster-whisper without dependencies to avoid PyAV Windows compatibility issues:
 # pip install faster-whisper --no-deps
-# pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
+# pip install ctranslate2 tokenizers transformers rich onnxruntime
 
-# Alternative: Traditional method (may have PyAV issues on Windows)
+# IMPORTANT: PyAV (av) is NOT needed for whisper_clean.py - it uses FFmpeg directly
 faster-whisper>=1.0.0      # Main Whisper implementation with CUDA support
 rich>=13.0.0               # Beautiful terminal interface & progress bars
 
@@ -14,7 +14,7 @@ transformers>=4.50.0       # (Optional) External MT models for two-pass pipeline
 sentencepiece>=0.1.99      # (Optional) Required by many multilingual MT models (NLLB, M2M)
 torch>=2.2.0               # (Optional) Needed for transformers MT on GPU/CPU; ensure CUDA build for GPU
 onnxruntime>=1.20.0        # ONNX runtime (used internally by some pipelines; keep for compatibility)
-av==11.0.0                 # PyAV (legacy scripts only); not required by `whisper_clean.py`
+# av==11.0.0               # PyAV (AVOID - Windows compatibility issues, whisper_clean.py uses FFmpeg directly)
 
 # Optional performance improvement when downloading models from repos with Xet storage enabled.
 # Installs the Xet filesystem helper to avoid fallback to slower HTTP and removes the runtime warning:

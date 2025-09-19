@@ -546,7 +546,7 @@ class WhisperMVPClean:
         if remux_path.exists() and not overwrite:
             console.print(f"[yellow]Remux target exists: {remux_path} (use --remux-overwrite to replace)[/yellow]")
             return remux_path
-        console.print(f"[blue]Remuxing with subtitles → {remux_path.name}[/blue]")
+        console.print(f"[blue]Remuxing with subtitles -> {remux_path.name}[/blue]")
         # ffmpeg command: copy streams, add subtitle
         # Use -map 0 to include all original streams, then add SRT as new input
         # Language metadata if provided
@@ -608,7 +608,7 @@ Examples:
     parser.add_argument('--device-order',
                        help='Comma-separated list of devices to try in order (e.g., cuda,igpu,cpu). Overrides --device when provided. igpu currently maps to optimized CPU path.')
     parser.add_argument('--no-fallback', action='store_true',
-                       help='Disable automatic CUDA→CPU fallback when GPU initialization fails')
+                       help='Disable automatic CUDA->CPU fallback when GPU initialization fails')
     parser.add_argument('--remux', action='store_true',
                        help='After generating SRT, remux it into a new media file with .subbed before extension (keeps SRT)')
     parser.add_argument('--remux-language',

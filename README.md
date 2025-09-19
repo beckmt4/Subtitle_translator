@@ -377,12 +377,12 @@ pip install faster-whisper --no-deps
 pip install ctranslate2 tokenizers transformers rich onnxruntime av==11.0.0
 ```
 
-**6. Missing CUDA / cuDNN DLLs (e.g., `cudnn_ops64_9.dll`, `cublas64_12.dll`)**
+**6. Missing CUDA / cuDNN DLLs (e.g., `cudart64_12.dll`, `cudnn_ops64_9.dll`)**
 
 Symptoms:
 ```
-Could not locate cudnn_ops64_9.dll
-... or errors mentioning cublas / cudart / cudnnCreateTensorDescriptor
+Could not locate cudart64_12.dll
+... or errors mentioning cudnn_ops / cudart / cudnnCreateTensorDescriptor
 ```
 
 What’s happening:
@@ -404,7 +404,11 @@ Permanent Fix (Recommended to restore GPU speed):
 3. Open a **new** PowerShell window (PATH changes require a new session).
 4. Verify DLL availability:
 ```powershell
-Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Recurse -Filter cudnn*64_9.dll
+# Check if CUDA DLLs are on your PATH
+where cudart64_12.dll   # Located in C:\Program Files\Blackmagic Design\DaVinci Resolve
+where cublas64_12.dll   # Located in C:\Program Files\Blackmagic Design\DaVinci Resolve
+where cublasLt64_12.dll # Located in C:\Program Files\Blackmagic Design\DaVinci Resolve
+where cudnn_ops64_9.dll # Located in C:\Program Files\NVIDIA\CUDNN\v9.13\bin\12.9
 ```
 5. Re-run validation:
 ```powershell
@@ -413,7 +417,7 @@ Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Recurse -Fil
 
 Quick Diagnostic (optional):
 ```powershell
-$dlls = 'cudart64_12.dll','cublas64_12.dll','cublasLt64_12.dll','cudnn_ops64_9.dll'
+$dlls = 'cudart64_12.dll','cudnn_ops64_9.dll'
 foreach ($d in $dlls) { "$d => " + ([bool](Get-Command $d -ErrorAction SilentlyContinue)) }
 ```
 
