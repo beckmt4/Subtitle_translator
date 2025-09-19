@@ -24,6 +24,7 @@ import tempfile
 import subprocess
 import threading
 import time
+import contextlib
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -244,19 +245,33 @@ def main():
     if compute_type is None:
         compute_type = "float16" if args.device == "cuda" else "int8_float16"
 
-    progress = Progress(
+    # Create two separate progress displays for ASR and MT phases
+    # First progress display for ASR phase
+    asr_progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
         BarColumn(),
         TextColumn("{task.percentage:>3.0f}%"),
         TimeElapsedColumn(),
-        transient=False,
         console=console
     )
+    
+    # Second progress display for MT phase
+    mt_progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold green]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console
+    )
+    
     segments_struct: List[Dict] = []
 
-    with progress:
-        t_model = progress.add_task("Loading ASR model", total=100 if args.model_progress else None)
+    # First phase: ASR (Speech Recognition)
+    with asr_progress:
+        console.print("[bold blue]Phase 1: Automatic Speech Recognition[/bold blue]")
+        t_model = asr_progress.add_task("Loading ASR model", total=100 if args.model_progress else None)
 
         stop_flag = threading.Event()
         model_size_map = {
@@ -294,10 +309,10 @@ def main():
                                 # skip gigantic partial downloads maybe locked
                                 with contextlib.suppress(Exception):
                                     total_bytes += fp.stat().st_size
-                    if est_total_mb and total_bytes > 0 and progress.tasks[t_model].total:
+                    if est_total_mb and total_bytes > 0 and asr_progress.tasks[t_model].total:
                         mb = total_bytes / (1024*1024)
                         pct = min(99.0, (mb / est_total_mb) * 100.0)
-                        progress.update(t_model, completed=pct)
+                        asr_progress.update(t_model, completed=pct)
                 except Exception:
                     pass
                 time.sleep(0.6)
@@ -332,17 +347,17 @@ def main():
             stop_flag.set()
             if cache_thread:
                 cache_thread.join(timeout=2)
-        if args.model_progress and progress.tasks[t_model].total:
-            progress.update(t_model, completed=100)
+        if args.model_progress and asr_progress.tasks[t_model].total:
+            asr_progress.update(t_model, completed=100)
         if args.diag:
             # Print diagnostics after ASR model is loaded (MT may not be loaded yet)
             print_diagnostics(asr_model, None, None, args)
 
-        t_audio = progress.add_task("Extracting audio", total=100)
+        t_audio = asr_progress.add_task("Extracting audio", total=100)
         wav_path = run_ffmpeg_extract(media_path)
-        progress.update(t_audio, completed=100)
+        asr_progress.update(t_audio, completed=100)
 
-        t_asr = progress.add_task("Transcribing", total=None)
+        t_asr = asr_progress.add_task("Transcribing", total=None)
         try:
             gen = asr_model.transcribe(
                 str(wav_path),
@@ -365,38 +380,63 @@ def main():
                 "end": s.end,
                 "src": s.text.strip()
             })
-        progress.update(t_asr, completed=100)
+        asr_progress.update(t_asr, completed=100)
 
+        # Start the second phase: MT (Machine Translation)
+        console.print("\n[bold green]Phase 2: Machine Translation[/bold green]")
+        
         use_external_mt = not args.no_mt and args.task != "translate"
         translations: List[str] = []
-        if use_external_mt:
-            t_mt = progress.add_task("Loading MT model", total=None)
-            tok, mt = load_mt_model(args.mt_model, args.device)
-            progress.update(t_mt, completed=100)
-            if args.diag:
-                print_diagnostics(asr_model, tok, mt, args)
+        
+        with mt_progress:
+            if use_external_mt:
+                t_mt = mt_progress.add_task("Loading MT model", total=None)
+                tok, mt = load_mt_model(args.mt_model, args.device)
+                mt_progress.update(t_mt, completed=100)
+                if args.diag:
+                    print_diagnostics(asr_model, tok, mt, args)
 
-            if tok and mt:
-                t_translate = progress.add_task("Translating segments", total=len(segments_struct))
-                batch_texts = [s["src"] for s in segments_struct]
-                try:
-                    translated = batch_translate(
-                        batch_texts,
-                        tok,
-                        mt,
-                        batch_size=args.batch_size,
-                        max_new_tokens=args.max_new_tokens,
-                        beam_size=args.mt_beams
-                    )
-                    for i, tr in enumerate(translated):
-                        segments_struct[i]["text"] = tr.strip()
-                        progress.advance(t_translate)
-                except Exception as e:
-                    console.print(f"[yellow]External MT failed: {e}. Falling back to Whisper internal translation pass.[/yellow]")
-                    # second pass: internal translation
-                    translations = []
-                    t_second = progress.add_task("Whisper translation pass", total=None)
-                    # re-run with task=translate, using original audio
+                if tok and mt:
+                    t_translate = mt_progress.add_task("Translating segments", total=len(segments_struct))
+                    batch_texts = [s["src"] for s in segments_struct]
+                    try:
+                        translated = batch_translate(
+                            batch_texts,
+                            tok,
+                            mt,
+                            batch_size=args.batch_size,
+                            max_new_tokens=args.max_new_tokens,
+                            beam_size=args.mt_beams
+                        )
+                        for i, tr in enumerate(translated):
+                            segments_struct[i]["text"] = tr.strip()
+                            mt_progress.advance(t_translate)
+                    except Exception as e:
+                        console.print(f"[yellow]External MT failed: {e}. Falling back to Whisper internal translation pass.[/yellow]")
+                        # second pass: internal translation
+                        translations = []
+                        t_second = mt_progress.add_task("Whisper translation pass", total=None)
+                        # re-run with task=translate, using original audio
+                        gen2 = asr_model.transcribe(
+                            str(wav_path),
+                            language=args.language,
+                            task="translate",
+                            beam_size=args.beam_size,
+                            temperature=args.temperature,
+                            patience=args.patience,
+                            vad_filter=args.vad_filter,
+                            condition_on_previous_text=True
+                        )
+                        seg2, _ = gen2
+                        mapped = list(seg2)
+                        # naive alignment by order
+                        for i, s2 in enumerate(mapped):
+                            if i < len(segments_struct):
+                                segments_struct[i]["text"] = s2.text.strip()
+                        mt_progress.update(t_second, completed=100)
+                else:
+                    # fallback path: internal translation
+                    t_fallback = mt_progress.add_task("Whisper translation pass", total=None)
                     gen2 = asr_model.transcribe(
                         str(wav_path),
                         language=args.language,
@@ -409,72 +449,72 @@ def main():
                     )
                     seg2, _ = gen2
                     mapped = list(seg2)
-                    # naive alignment by order
                     for i, s2 in enumerate(mapped):
                         if i < len(segments_struct):
                             segments_struct[i]["text"] = s2.text.strip()
-                    progress.update(t_second, completed=100)
+                    mt_progress.update(t_fallback, completed=100)
             else:
-                # fallback path: internal translation
-                t_fallback = progress.add_task("Whisper translation pass", total=None)
-                gen2 = asr_model.transcribe(
-                    str(wav_path),
-                    language=args.language,
-                    task="translate",
-                    beam_size=args.beam_size,
-                    temperature=args.temperature,
-                    patience=args.patience,
-                    vad_filter=args.vad_filter,
-                    condition_on_previous_text=True
-                )
-                seg2, _ = gen2
-                mapped = list(seg2)
-                for i, s2 in enumerate(mapped):
-                    if i < len(segments_struct):
-                        segments_struct[i]["text"] = s2.text.strip()
-                progress.update(t_fallback, completed=100)
-        else:
-            # We already requested translate in first pass (args.task == translate or user forced no_mt)
-            for s in segments_struct:
-                s["text"] = s["src"]
+                # We already requested translate in first pass (args.task == translate or user forced no_mt)
+                t_skip = mt_progress.add_task("Skipping external MT (using direct Whisper translation)", total=100)
+                for s in segments_struct:
+                    s["text"] = s["src"]
+                mt_progress.update(t_skip, completed=100)
+        
+        # Phase 3: Output Generation
+        console.print("\n[bold cyan]Phase 3: Subtitle Formatting and Output[/bold cyan]")
+        
+        # Create a third progress bar for output phase
+        output_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console
+        )
+        
+        with output_progress:
+            t_shape = output_progress.add_task("Shaping SRT", total=len(segments_struct))
+            final_segments = []
+            for seg in segments_struct:
+                final_segments.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": seg["text"]
+                })
+                output_progress.advance(t_shape)
 
-        t_shape = progress.add_task("Shaping SRT", total=len(segments_struct))
-        final_segments = []
-        for seg in segments_struct:
-            final_segments.append({
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": seg["text"]
-            })
-            progress.advance(t_shape)
+            if args.dry_run:
+                console.print("[green]Dry run complete (no file written).[/green]")
+                return
 
-        if args.dry_run:
-            console.print("[green]Dry run complete (no file written).[/green]")
-            return
+            t_write = output_progress.add_task("Writing SRT", total=100)
+            write_srt(final_segments, out_path, args)
+            output_progress.update(t_write, completed=100)
 
-        t_write = progress.add_task("Writing SRT", total=100)
-        write_srt(final_segments, out_path, args)
-        progress.update(t_write, completed=100)
-
-        if args.remux and not args.dry_run:
-            remux_lang = args.remux_language or ("en" if (not args.no_mt or args.task == "translate") else (args.language or "und"))
-            remux_target = media_path.with_name(f"{media_path.stem}.subbed{media_path.suffix}")
-            ff_cmd = [
-                "ffmpeg",
-                "-y" if args.remux_overwrite else "-n",
-                "-i", str(media_path),
-                "-i", str(out_path),
-                "-map", "0", "-map", "1:0",
-                "-c", "copy",
-                "-c:s:1", "srt",
-                "-metadata:s:s:1", f"language={remux_lang}",
-                str(remux_target)
-            ]
-            r = subprocess.run(ff_cmd, capture_output=True, text=True)
-            if r.returncode != 0:
-                console.print(f"[yellow]Remux failed: {r.stderr.splitlines()[-1] if r.stderr else 'ffmpeg error'}[/yellow]")
-            else:
-                console.print(f"[green]✓ Remux complete: {remux_target}[/green]")
+            # Handle remuxing in the same progress group
+            if args.remux and not args.dry_run:
+                t_remux = output_progress.add_task("Remuxing video with subtitles", total=100)
+                remux_lang = args.remux_language or ("en" if (not args.no_mt or args.task == "translate") else (args.language or "und"))
+                remux_target = media_path.with_name(f"{media_path.stem}.subbed{media_path.suffix}")
+                ff_cmd = [
+                    "ffmpeg",
+                    "-y" if args.remux_overwrite else "-n",
+                    "-i", str(media_path),
+                    "-i", str(out_path),
+                    "-map", "0", "-map", "1:0",
+                    "-c", "copy",
+                    "-c:s:1", "srt",
+                    "-metadata:s:s:1", f"language={remux_lang}",
+                    str(remux_target)
+                ]
+                r = subprocess.run(ff_cmd, capture_output=True, text=True)
+                if r.returncode != 0:
+                    console.print(f"[yellow]Remux failed: {r.stderr.splitlines()[-1] if r.stderr else 'ffmpeg error'}[/yellow]")
+                    output_progress.update(t_remux, completed=100, description="[red]Remuxing failed")
+                else:
+                    output_progress.update(t_remux, completed=100)
+                    console.print(f"[green]✓ Remux complete: {remux_target}[/green]")
 
     console.print(f"[bold green]Done.[/bold green] Wrote: {out_path}")
 
